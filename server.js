@@ -45,19 +45,23 @@ const SESSION_TTL = 8 * 60 * 60 * 1000; // 8 hours
 
 // ── MIME types ────────────────────────────────────────────────
 const MIME = {
-  '.html':'.html', '.css':'text/css; charset=utf-8',
-  '.js':  'application/javascript; charset=utf-8',
-  '.json':'application/json',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg':'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp':'image/webp',
-  '.pdf': 'application/pdf',
+  '.html': 'text/html; charset=utf-8',
+  '.css':  'text/css; charset=utf-8',
+  '.js':   'application/javascript; charset=utf-8',
+  '.json': 'application/json',
+  '.svg':  'image/svg+xml',
+  '.ico':  'image/x-icon',
+  '.png':  'image/png',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif':  'image/gif',
+  '.webp': 'image/webp',
+  '.pdf':  'application/pdf',
   '.woff2':'font/woff2',
-  '.txt': 'text/plain; charset=utf-8',
+  '.woff': 'font/woff',
+  '.ttf':  'font/ttf',
+  '.txt':  'text/plain; charset=utf-8',
+  '.webmanifest': 'application/manifest+json',
 };
 
 const MIME_BY_EXT = {
@@ -147,19 +151,61 @@ const server = http.createServer(async (req, res) => {
     const stat = await fsp.stat(filePath);
     if (!stat.isFile()) return send404(res);
     const ext  = path.extname(filePath).toLowerCase();
-    const mime = MIME[ext] || 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': mime === '.html'
-      ? 'text/html; charset=utf-8' : mime });
+    const basename = path.basename(filePath);
+    let mime = MIME[ext] || 'application/octet-stream';
+    // Override MIME for specific files
+    if (basename === 'manifest.json') mime = 'application/manifest+json';
+    const isSW = basename === 'sw.js';
+    const headers = {
+      'Content-Type': mime,
+      'X-Content-Type-Options':  'nosniff',
+      'X-Frame-Options':         'SAMEORIGIN',
+      'Referrer-Policy':         'same-origin',
+    };
+    // Service worker must not be cached by browser HTTP cache
+    if (isSW) {
+      headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+      headers['Service-Worker-Allowed'] = '/';
+    } else if (ext === '.html') {
+      headers['Cache-Control'] = 'no-cache';
+    } else {
+      headers['Cache-Control'] = 'public, max-age=3600';
+    }
+    res.writeHead(200, headers);
     fs.createReadStream(filePath).pipe(res);
   } catch(e) { send404(res); }
 });
 
+// Simple brute-force protection for login
+const loginAttempts = new Map(); // ip -> { count, firstAt }
+const MAX_LOGIN_ATTEMPTS = 10;
+const LOGIN_WINDOW = 15 * 60 * 1000; // 15 min
+
+function getClientIP(req) {
+  return (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+}
+
 async function handleLogin(req, res) {
   try {
+    const ip   = getClientIP(req);
+    const now  = Date.now();
+    const att  = loginAttempts.get(ip) || { count: 0, firstAt: now };
+    if (now - att.firstAt > LOGIN_WINDOW) { att.count = 0; att.firstAt = now; }
+    if (att.count >= MAX_LOGIN_ATTEMPTS) {
+      const wait = Math.ceil((LOGIN_WINDOW - (now - att.firstAt)) / 60000);
+      return sendJSON(res, 429, { error: `Too many attempts. Try again in ${wait} min.` });
+    }
+
     const body = JSON.parse(await readBody(req));
     if (!USE_AUTH) return sendJSON(res, 200, { ok: true, noauth: true });
     const valid = body.user === AUTH_USER && sha256(body.pass) === AUTH_HASH;
-    if (!valid) return sendJSON(res, 401, { error: 'Invalid credentials' });
+    if (!valid) {
+      att.count++;
+      loginAttempts.set(ip, att);
+      return sendJSON(res, 401, { error: 'Invalid credentials' });
+    }
+    // Success — clear attempts
+    loginAttempts.delete(ip);
     const token = newToken();
     sessions.set(token, { user: AUTH_USER, expires: Date.now() + SESSION_TTL });
     res.setHeader('Set-Cookie', `fm_session=${token}; Path=/; HttpOnly; SameSite=Strict`);
@@ -208,8 +254,11 @@ async function handleAPI(req, res, pathname, query) {
   if (method === 'GET' && pathname === '/api/validate') {
     try {
       const p = query.path;
-      await fsp.access(p, fs.constants.R_OK);
-      const stat = await fsp.stat(p);
+      if (!p || typeof p !== 'string') return sendJSON(res, 400, { valid: false, error: 'path required' });
+      // Resolve to absolute path and check it doesn't escape via symlinks etc.
+      const resolved = path.resolve(p);
+      await fsp.access(resolved, fs.constants.R_OK);
+      const stat = await fsp.stat(resolved);
       sendJSON(res, 200, { valid: true, isDir: stat.isDirectory() });
     } catch(e) { sendJSON(res, 200, { valid: false, error: e.message }); }
     return;
@@ -384,19 +433,25 @@ async function copyRecursive(src, dest) {
 }
 
 // ── File search ───────────────────────────────────────────────
-async function searchFiles(root, nameKw, contentKw, results=[], depth=0) {
+async function searchFiles(root, nameKw, contentKw, results, depth) {
+  results = results || [];
+  depth   = depth   || 0;
   if (depth > 8) return results;
-  const SKIP = new Set(['node_modules','.git','__pycache__']);
+  const SKIP = new Set(['node_modules','.git','__pycache__','.DS_Store']);
   let entries;
   try { entries = await fsp.readdir(root, { withFileTypes: true }); } catch(e) { return results; }
   for (const e of entries) {
     if (e.name.startsWith('.')) continue;
     if (SKIP.has(e.name)) continue;
     const fp = path.join(root, e.name);
+    const nameMatch = !nameKw || e.name.toLowerCase().includes(nameKw.toLowerCase());
     if (e.isDirectory()) {
-      await searchFiles(fp, nameKw, contentKw, results, depth+1);
+      // Include matching directories when not doing a content search
+      if (nameMatch && !contentKw) {
+        results.push({ name: e.name, path: fp, kind: 'directory', isText: false, ext: '' });
+      }
+      await searchFiles(fp, nameKw, contentKw, results, depth + 1);
     } else {
-      const nameMatch = !nameKw || e.name.toLowerCase().includes(nameKw.toLowerCase());
       let contentMatch = false;
       if (nameMatch && contentKw && isTextFile(e.name)) {
         try {

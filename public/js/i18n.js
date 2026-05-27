@@ -1,10 +1,11 @@
 /**
  * i18n.js – Localization for Mini Local File Manager
- * Supports: ja (Japanese), en (English)
+ * Auto-detects locale from browser/OS. English is the default.
+ * Supports: en (English), ja (Japanese)
  */
 'use strict';
 
-const I18N = {
+var I18N = {
   ja: {
     tabFolder:'フォルダ階層', tabEditor:'マークダウン編集',
     open:'開く', newFile:'新規ファイル', newFolder:'新規フォルダ', search:'検索',
@@ -29,14 +30,13 @@ const I18N = {
     searchTitle:'ファイル検索', searchName:'ファイル名キーワード',
     searchContentOpt:'テキスト内容も検索 (GREP)', doSearch:'検索', clear:'クリア',
     login:'ログイン', logout:'ログアウト',
-    // Messages
     msgLoading:'読み込み中…', msgOpened:'開きました',
     msgSaved:'保存しました ✓', msgSavedLocal:'ローカルに保存しました',
     msgDeleted:'削除しました', msgRenamed:'名前変更しました',
     msgCopied:'コピーしました', msgMoved:'移動しました',
     msgCreated:'作成しました', msgAdded:'件追加しました',
     msgPasteEmpty:'クリップボードが空です',
-    msgBinary:'バイナリファイルは編集できません',
+    msgBinary:'このファイルは編集できません',
     msgPermission:'権限がありません（読取専用ファイル）',
     msgError:'エラー', msgConnErr:'接続エラー',
     msgPathInvalid:'有効なパスではありません',
@@ -46,6 +46,9 @@ const I18N = {
     msgLoginFail:'ユーザー名またはパスワードが違います',
     msgRootSet:'ルートフォルダに設定しました',
     msgNoRoot:'先にフォルダを開いてください',
+    msgDirMatch:'(フォルダ)',
+    installApp:'アプリをインストール',
+    updateAvailable:'更新があります — 再読み込みで適用'
   },
   en: {
     tabFolder:'Folder Tree', tabEditor:'Markdown Editor',
@@ -77,7 +80,7 @@ const I18N = {
     msgCopied:'Copied', msgMoved:'Moved',
     msgCreated:'Created', msgAdded:'file(s) added',
     msgPasteEmpty:'Clipboard is empty',
-    msgBinary:'Binary files cannot be edited',
+    msgBinary:'This file cannot be edited',
     msgPermission:'Permission denied (read-only file)',
     msgError:'Error', msgConnErr:'Connection error',
     msgPathInvalid:'Invalid path',
@@ -87,30 +90,48 @@ const I18N = {
     msgLoginFail:'Invalid username or password',
     msgRootSet:'Set as root folder',
     msgNoRoot:'Please open a folder first',
+    msgDirMatch:'(folder)',
+    installApp:'Install App',
+    updateAvailable:'Update available — reload to apply'
   }
 };
 
-let currentLang = localStorage.getItem('fm_lang') || 'ja';
+/**
+ * Detect locale from browser/OS. English is the default.
+ * Only switches to Japanese when the primary language is explicitly 'ja'.
+ */
+function detectLang() {
+  var langs = [];
+  if (navigator.languages && navigator.languages.length) {
+    langs = Array.prototype.slice.call(navigator.languages);
+  } else if (navigator.language) {
+    langs = [navigator.language];
+  } else if (navigator.userLanguage) {
+    langs = [navigator.userLanguage]; // IE fallback
+  }
+  for (var i = 0; i < langs.length; i++) {
+    var l = langs[i].toLowerCase();
+    if (l === 'ja' || l.indexOf('ja-') === 0) return 'ja';
+  }
+  return 'en'; // English default
+}
+
+// No localStorage persistence — always auto-detect from environment
+var currentLang = detectLang();
 
 function t(key) {
-  return (I18N[currentLang] || I18N.ja)[key] || key;
+  var dict = I18N[currentLang] || I18N['en'];
+  return dict[key] !== undefined ? dict[key] : (I18N['en'][key] || key);
 }
 
 function applyI18n() {
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    const key = el.dataset.i18n;
-    el.textContent = t(key);
-  });
-  document.querySelectorAll('[data-i18n-title]').forEach(el => {
-    el.title = t(el.dataset.i18nTitle);
-  });
+  var els = document.querySelectorAll('[data-i18n]');
+  for (var i = 0; i < els.length; i++) {
+    els[i].textContent = t(els[i].dataset.i18n);
+  }
+  var titleEls = document.querySelectorAll('[data-i18n-title]');
+  for (var j = 0; j < titleEls.length; j++) {
+    titleEls[j].title = t(titleEls[j].dataset.i18nTitle);
+  }
   document.documentElement.lang = currentLang;
-}
-
-function toggleLang() {
-  currentLang = currentLang === 'ja' ? 'en' : 'ja';
-  localStorage.setItem('fm_lang', currentLang);
-  applyI18n();
-  // Update dynamic text
-  if (window.onLangChange) window.onLangChange();
 }

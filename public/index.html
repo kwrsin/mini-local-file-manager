@@ -2,9 +2,14 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0b0c10">
   <title>Mini Local File Manager</title>
   <link rel="icon" type="image/svg+xml" href="/img/favicon.svg">
+  <link rel="apple-touch-icon" href="/img/icon-192.svg">
+  <link rel="manifest" href="/manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
@@ -45,7 +50,9 @@
     </button>
   </nav>
   <div class="tab-bar-actions">
-    <button class="btn-icon" id="btn-lang" title="Language / 言語">EN/JP</button>
+    <button class="btn-icon" id="btn-pwa-install" style="display:none" title="Install App" onclick="triggerPWAInstall()" data-i18n-title="installApp">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    </button>
     <button class="btn-icon" id="btn-logout" style="display:none" title="Logout" data-i18n-title="logout">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16,17 21,12 16,7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
     </button>
@@ -239,7 +246,57 @@
   </div>
 </div>
 
+<script src="js/polyfill.js"></script>
 <script src="js/i18n.js"></script>
 <script src="js/app.js"></script>
+<script>
+/* ── Service Worker registration ──────────────────────────── */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .then(function(reg) {
+        // Check for updates every 60 seconds while app is open
+        setInterval(function() { reg.update(); }, 60000);
+
+        // Notify user when new version is available
+        reg.addEventListener('updatefound', function() {
+          var newWorker = reg.installing;
+          if (!newWorker) return;
+          newWorker.addEventListener('statechange', function() {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              // New version available — show subtle update notice
+              var bar = document.getElementById('status-msg');
+              if (bar) {
+                bar.textContent = '🔄 ' + (typeof t === 'function' ? t('updateAvailable') || 'Update available — reload to apply' : 'Update available — reload to apply');
+              }
+            }
+          });
+        });
+      })
+      .catch(function(err) {
+        console.log('[SW] Registration failed:', err);
+      });
+  });
+}
+
+/* ── PWA Install prompt (A2HS) ────────────────────────────── */
+var _deferredInstall = null;
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  _deferredInstall = e;
+  var btn = document.getElementById('btn-pwa-install');
+  if (btn) btn.style.display = 'inline-flex';
+});
+window.addEventListener('appinstalled', function() {
+  _deferredInstall = null;
+  var btn = document.getElementById('btn-pwa-install');
+  if (btn) btn.style.display = 'none';
+});
+function triggerPWAInstall() {
+  if (!_deferredInstall) return;
+  _deferredInstall.prompt();
+  _deferredInstall.userChoice.then(function() { _deferredInstall = null; });
+}
+</script>
 </body>
 </html>

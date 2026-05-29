@@ -41,6 +41,70 @@ PORT=8080 node server.js
 Open **http://localhost:3000** in your browser, then type a folder path and click **Open**.
 
 ---
+## Access Control (conf.json)
+
+Restrict which folders are visible/accessible.
+
+```bash
+node server.js -conf=./conf.json
+node server.js 4000 -conf=./conf.json
+```
+
+See `conf.example.json` for a template. The `conf.json` format:
+
+```jsonc
+{
+  "port": 3000,           // optional port (overridden by CLI arg or PORT env)
+  "access": [
+    { "deny":  "/*" },                            // deny everything (implicit default, can omit)
+    { "allow": "/users/alice/documents/*" },       // allow this subtree
+    { "allow": "/users/alice/downloads/*" },
+    { "deny":  "/users/alice/documents/secrets/*" } // override: deny this subtree
+  ]
+}
+```
+
+**Rule matching:** The **most specific (longest-base) rule wins**, regardless of order.  
+This means a more specific allow/deny always overrides a less specific one.
+
+**Behavior when conf.json is absent or has no `access` key:** all paths are allowed (access control disabled).
+
+**Comments:** `// line comments` are supported in conf.json.
+
+---
+
+## New Features (v2.4)
+
+- 🎵 **Media player** — audio/video files open in a built-in player (mp3, m4a, wav, ogg, flac, mp4, webm, ogv…)
+- 📦 **ZIP compress** — right-click a folder → "Compress to ZIP" → creates `<folder>.zip` alongside it
+- 📦 **ZIP extract** — right-click a `.zip` file → "Extract ZIP" → extracts to a folder of the same name
+- 📥 **Download** — right-click any file/folder → "Download" (Ctrl+D). Folders are zipped on-the-fly before download
+- 📤 **File upload** — toolbar "Upload" button (Ctrl+U) — opens a modal with drag-and-drop zone, shows per-file status, highlights uploaded files after completion
+- 🖱️ **Drag-to-move** — drag a file/folder onto another folder in the tree to move it (with visual drop-target highlight)
+- 📱 **Long-press** (mobile/touch) — hold 500ms on any item to show its context menu; haptic vibration on Android
+- 🖱️ **Drag-and-drop upload** — drop files from OS onto the file tree to upload them
+- 🔑 **Access control** — path allow/deny rules via conf.json (longest-match algorithm)
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+O` | Open folder |
+| `Ctrl+S` | Save file |
+| `Ctrl+U` | Upload files |
+| `Ctrl+D` | Download selected file/folder |
+| `Ctrl+C` | Copy |
+| `Ctrl+X` | Cut |
+| `Ctrl+V` | Paste |
+| `Ctrl+Delete` | Delete |
+| `F2` | Rename |
+| `F3` | Search |
+| `F9` | Back to folder tree |
+| `F10` | Toggle edit/preview |
+| `↑↓←→` | Navigate tree |
+
+---
+
 
 ## Requirements
 

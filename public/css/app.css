@@ -324,3 +324,67 @@ kbd { font-family:var(--font-mono); font-size:10px; background:var(--c-raised); 
   background: rgba(67,217,162,.1);
   border-color: var(--c-green);
 }
+
+/* ── Upload drop zone ───────────────────────────────────────── */
+.upload-drop-zone {
+  display:-webkit-flex; display:flex;
+  -webkit-flex-direction:column; flex-direction:column;
+  -webkit-align-items:center; align-items:center;
+  gap:10px; padding:28px 20px;
+  border:2px dashed var(--c-border-hi); border-radius:var(--radius);
+  cursor:pointer; transition:all var(--t); text-align:center;
+  color:var(--c-text-3);
+}
+.upload-drop-zone:hover, .upload-drop-zone.drag-over {
+  border-color:var(--c-accent); background:var(--c-accent-glow); color:var(--c-accent);
+}
+.upload-drop-zone svg { width:44px; height:44px; opacity:.5; }
+.upload-drop-zone p { font-size:13px; }
+.upload-dest-label {
+  font-family:var(--font-mono); font-size:12px; color:var(--c-text-2);
+  padding:6px 10px; background:var(--c-surface); border:1px solid var(--c-border);
+  border-radius:var(--radius-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.upload-file-list { display:-webkit-flex; display:flex; -webkit-flex-direction:column; flex-direction:column; max-height:180px; overflow-y:auto; }
+.upload-file-item {
+  display:-webkit-flex; display:flex; -webkit-align-items:center; align-items:center;
+  gap:8px; padding:5px 4px; font-size:12px; color:var(--c-text-2);
+  border-bottom:1px solid var(--c-border);
+}
+.upload-file-item svg { width:13px; height:13px; flex-shrink:0; color:var(--c-text-3); }
+.upload-file-item .uf-name { -webkit-flex:1; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.upload-file-item .uf-size { font-size:11px; color:var(--c-text-3); flex-shrink:0; }
+.upload-file-item .uf-status { font-size:11px; flex-shrink:0; }
+.uf-ok   { color:var(--c-green); }
+.uf-err  { color:var(--c-red); }
+.uf-wait { color:var(--c-text-3); }
+
+/* ── Media player modal ─────────────────────────────────────── */
+.media-box { width:min(680px,95vw); }
+.media-body {
+  padding:16px; display:-webkit-flex; display:flex;
+  -webkit-align-items:center; align-items:center;
+  -webkit-justify-content:center; justify-content:center;
+  background:var(--c-base); min-height:200px;
+}
+.media-body video, .media-body audio {
+  max-width:100%; max-height:65vh; border-radius:var(--radius-sm);
+  outline:none;
+}
+.media-body audio { width:100%; min-width:280px; }
+
+/* ── Tree drag-and-drop (move) ──────────────────────────────── */
+.tree-item.drag-src { opacity:.45; }
+.tree-item.drop-target {
+  background:var(--c-accent-glow) !important;
+  outline:1px dashed var(--c-accent);
+  outline-offset:-1px;
+}
+
+/* ── Long-press ripple (mobile) ─────────────────────────────── */
+@keyframes lp-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--c-accent-glow); }
+  70%  { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.tree-item.long-press-active { animation: lp-pulse .5s ease; }

@@ -24,9 +24,13 @@ var TEXT_EXTS = {'md':1,'txt':1,'html':1,'htm':1,'css':1,'js':1,'mjs':1,'cjs':1,
   'go':1,'rs':1,'php':1,'swift':1,'sql':1,'graphql':1,'vue':1,'svelte':1,
   'astro':1,'env':1,'gitignore':1,'dockerfile':1};
 var IMG_EXTS  = {'png':1,'jpg':1,'jpeg':1,'gif':1,'webp':1,'bmp':1,'ico':1,'tiff':1};
+var AUDIO_EXTS = {'mp3':1,'wav':1,'ogg':1,'flac':1,'aac':1,'m4a':1,'opus':1,'weba':1};
+var VIDEO_EXTS = {'mp4':1,'webm':1,'ogv':1,'mov':1,'avi':1,'mkv':1,'m4v':1};
+var MEDIA_EXTS = {};
 var VIEW_EXTS = {'png':1,'jpg':1,'jpeg':1,'gif':1,'webp':1,'bmp':1,'ico':1,'tiff':1,
-  'svg':1,'pdf':1,'json':1};
+  'svg':1,'pdf':1,'json':1}; // extended at runtime
 
+function isMedia(name) { return !!MEDIA_EXTS[name.split('.').pop().toLowerCase()]; }
 function isText(name) {
   var ext = name.split('.').pop().toLowerCase();
   return !!TEXT_EXTS[ext] ||
@@ -35,6 +39,10 @@ function isText(name) {
 function isViewable(name) { return !!VIEW_EXTS[name.split('.').pop().toLowerCase()]; }
 function getExt(name) { return name.split('.').pop().toLowerCase(); }
 function safeGet(obj, key) { return obj && obj[key] !== undefined ? obj[key] : null; }
+
+// Merge media types
+Object.assign(MEDIA_EXTS, AUDIO_EXTS, VIDEO_EXTS);
+Object.assign(VIEW_EXTS, MEDIA_EXTS);
 
 var LS_RECENT  = 'fm_recent';
 var LS_FILES   = 'fm_files';
@@ -76,9 +84,13 @@ var api = {
     return api.get('/api/search?root='+enc(root)+'&name='+enc(name)+'&content='+enc(content));
   },
   info:       function() { return api.get('/api/info'); },
+  zip:    function(p)    { return api.post('/api/zip',    {path:p}); },
+  unzip:  function(p)    { return api.post('/api/unzip',  {path:p}); },
   authStatus: function() { return api.get('/api/auth-status'); },
   login:  function(u, p) { return api.post('/api/login',  {user:u, pass:p}); },
-  logout: function()     { return api.post('/api/logout'); }
+  logout: function()     { return api.post('/api/logout'); },
+  downloadUrl:     function(p) { return '/api/download?path=' + enc(p); },
+  downloadZipUrl:  function(p) { return '/api/download-zip?path=' + enc(p); }
 };
 function enc(s) { return encodeURIComponent(s || ''); }
 
@@ -112,6 +124,9 @@ function bootApp() {
   bindShortcuts();
   bindDragDrop();
   bindSearch();
+  bindUpload();
+  bindLongPress();
+  bindTreeDragMove();
   connectWS();
   applyI18n();
 
@@ -221,6 +236,7 @@ function showPathError(msg) {
    TREE RENDERING
 ═══════════════════════════════════════════════════════════════ */
 function renderTree(nodes, container) {
+  S.tree = nodes; // store for nodeByPath lookup
   $('tree-empty').style.display = 'none';
   var existing = qsa('.tree-node', container);
   for (var i = 0; i < existing.length; i++) existing[i].parentNode.removeChild(existing[i]);
@@ -241,6 +257,7 @@ function buildNodes(nodes, parent, depth) {
       item.style.paddingLeft = (depth * 16 + 6) + 'px';
       item.dataset.path = node.path;
       item.dataset.kind = node.kind;
+      item.setAttribute('draggable', 'true');
 
       var toggle = document.createElement('span');
       toggle.className = node.kind === 'directory' ? 'tree-toggle' : 'tree-toggle leaf';
@@ -293,6 +310,8 @@ function buildNodes(nodes, parent, depth) {
             if (cw.childElementCount === 0) {
               api.tree(node.path).then(function(res) {
                 if (!res.error) {
+                  // Store children back into node for nodeByPath lookup
+                  node.children = res.tree;
                   if (res.tree.length) buildNodes(res.tree, cw, depth + 1);
                   else cw.innerHTML = '<div class="empty-dir">(empty)</div>';
                 }
@@ -363,8 +382,9 @@ function highlightInTree(filePath) {
 ═══════════════════════════════════════════════════════════════ */
 function openFileNode(node) {
   if (node.kind !== 'file') return;
-  if (!node.isText && isViewable(node.name)) { openViewer(node); return; }
-  if (node.isText) { openTextFile(node); return; }
+  if (isMedia(node.name))                        { openMedia(node);  return; }
+  if (!node.isText && isViewable(node.name))     { openViewer(node); return; }
+  if (node.isText)                               { openTextFile(node); return; }
   statusMsg(t('msgBinary'));
 }
 
@@ -742,6 +762,10 @@ function handleCtx(action) {
     case 'paste':      doPaste(); break;
     case 'rename':     startRename(); break;
     case 'delete':     confirmDelete(); break;
+    case 'zip':        doZip(); break;
+    case 'unzip':      doUnzip(); break;
+    case 'upload':     openUpload(); break;
+    case 'download':   doDownload(); break;
   }
 }
 
@@ -963,33 +987,37 @@ function renderSearchResults(results) {
 function bindDragDrop() {
   var tree = $('file-tree');
   tree.addEventListener('dragover', function(e) {
+    // If dragging a tree item internally, skip external-file drop
+    if (S._treeDragActive) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
-    tree.className += ' drag-active';
+    if (tree.className.indexOf('drag-active') < 0) tree.className += ' drag-active';
   });
   tree.addEventListener('dragleave', function(e) {
     if (!tree.contains(e.relatedTarget))
       tree.className = tree.className.replace(/\bdrag-active\b/g, '').trim();
   });
   tree.addEventListener('drop', function(e) {
+    // Skip internal tree drag-move operations
+    if (S._treeDragActive) return;
+    if (!e.dataTransfer.files || !e.dataTransfer.files.length) return;
     e.preventDefault();
     tree.className = tree.className.replace(/\bdrag-active\b/g, '').trim();
     if (!S.root) { statusMsg(t('msgNoRoot')); return; }
     var destDir = S.root;
     if (S.selected && S.selected.kind === 'directory') destDir = S.selected.path;
-    var files = Array.from(e.dataTransfer.files);
-    var promises = files.map(function(f) {
-      var dest = destDir + S.sep + f.name;
-      if (isText(f.name)) {
-        return f.text().then(function(txt) { return api.create(dest, txt); });
-      }
-      return api.create(dest, '');
-    });
-    Promise.all(promises).then(function(results) {
-      var count = results.filter(function(r) { return !r.error; }).length;
-      statusMsg(count + ' ' + t('msgAdded'));
-      return openRoot(S.root);
-    }).catch(function() {});
+    var files = Array.prototype.slice.call(e.dataTransfer.files);
+    var fd = new FormData();
+    for (var i = 0; i < files.length; i++) fd.append('file', files[i], files[i].name);
+    fetch('/api/upload?dest=' + enc(destDir), { method: 'POST', body: fd })
+      .then(function(r) { return r.json(); })
+      .then(function(res) {
+        var results = res.results || (res.ok ? [res] : []);
+        var count = results.filter(function(r) { return r.ok; }).length;
+        statusMsg(count + ' ' + t('msgAdded'));
+        S.openDirs[destDir] = true;
+        return openRoot(S.root);
+      }).catch(function() {});
   });
 }
 
@@ -1067,6 +1095,8 @@ function bindShortcuts() {
 
     if (ctrl && e.key === 'o') { e.preventDefault(); openFolderModal(); return; }
     if (ctrl && e.key === 's') { e.preventDefault(); saveFile(); return; }
+    if (ctrl && e.key === 'u') { e.preventDefault(); openUpload(); return; }
+    if (ctrl && e.key === 'd') { e.preventDefault(); doDownload(); return; }
     if (!inInput) {
       if (ctrl && e.key === 'c') { e.preventDefault(); doCopy(); return; }
       if (ctrl && e.key === 'x') { e.preventDefault(); doCut(); return; }
@@ -1118,3 +1148,415 @@ function arrowNav(e) {
     items[idx].scrollIntoView({ block: 'nearest' });
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   MEDIA PLAYER
+   Opens audio/video files in a modal player
+═══════════════════════════════════════════════════════════════ */
+function openMedia(node) {
+  var ext    = getExt(node.name);
+  var rawUrl = '/api/raw?path=' + enc(node.path);
+  $('media-title').textContent = node.name;
+  var body = $('media-body');
+  body.innerHTML = '';
+
+  var el;
+  if (AUDIO_EXTS[ext]) {
+    el = document.createElement('audio');
+    el.controls = true;
+    el.autoplay = false;
+  } else {
+    el = document.createElement('video');
+    el.controls = true;
+    el.autoplay = false;
+    el.style.maxWidth = '100%';
+    el.style.maxHeight = '65vh';
+  }
+  el.src = rawUrl;
+  el.preload = 'metadata';
+  body.appendChild(el);
+
+  // Stop playback when modal closes
+  var bg = $('modal-media').querySelector('.modal-bg');
+  var closeBtn = $('modal-media').querySelector('.modal-x');
+  function stopAndClose() {
+    el.pause();
+    el.src = '';
+    closeModal('modal-media');
+  }
+  if (bg)      bg.onclick      = stopAndClose;
+  if (closeBtn) closeBtn.onclick = stopAndClose;
+
+  openModal('modal-media');
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ZIP / UNZIP
+═══════════════════════════════════════════════════════════════ */
+function doZip() {
+  if (!S.selected || S.selected.kind !== 'directory') return;
+  var node = S.selected;
+  statusMsg(t('msgZipping'));
+  api.zip(node.path).then(function(res) {
+    if (res.error) { statusMsg(t('msgError') + ': ' + res.error); return; }
+    statusMsg(t('ctxZipDone') + ': ' + (res.dest || ''));
+    return openRoot(S.root);
+  }).catch(function(e) { statusMsg(t('msgError') + ': ' + e.message); });
+}
+
+function doUnzip() {
+  if (!S.selected || S.selected.kind !== 'file') return;
+  var node = S.selected;
+  statusMsg(t('msgUnzipping'));
+  api.unzip(node.path).then(function(res) {
+    if (res.error) { statusMsg(t('msgError') + ': ' + res.error); return; }
+    statusMsg(t('ctxUnzipDone') + ': ' + (res.dest || ''));
+    return openRoot(S.root);
+  }).catch(function(e) { statusMsg(t('msgError') + ': ' + e.message); });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DOWNLOAD
+   Ctrl+D  /  context menu → Download
+   File → direct download; Folder → zip then download
+═══════════════════════════════════════════════════════════════ */
+function doDownload() {
+  if (!S.selected) return; // no selection → do nothing
+  var node = S.selected;
+  var url;
+  if (node.kind === 'directory') {
+    // Zip on-the-fly via server, then trigger download
+    url = api.downloadZipUrl(node.path);
+    statusMsg(t('msgZipping'));
+  } else {
+    url = api.downloadUrl(node.path);
+  }
+  // Trigger browser download by creating a temporary <a> and clicking it
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = node.kind === 'directory' ? node.name + '.zip' : node.name;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function() {
+    document.body.removeChild(a);
+    if (node.kind !== 'directory') statusMsg(t('msgDownloading') || 'Downloading…');
+  }, 100);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   FILE UPLOAD (modal + drag-into-zone)
+   Ctrl+U shortcut / toolbar button
+═══════════════════════════════════════════════════════════════ */
+function openUpload() {
+  if (!S.root) { statusMsg(t('msgNoRoot')); return; }
+  // Determine upload destination
+  var dest = S.root;
+  if (S.selected && S.selected.kind === 'directory') dest = S.selected.path;
+  else if (S.selected && S.selected.kind === 'file')  dest = parentPath(S.selected.path);
+  $('upload-dest-path').textContent = dest;
+  $('upload-file-list').innerHTML = '';
+  $('upload-file-input').value = '';
+  S._uploadFiles = [];
+  openModal('modal-upload');
+}
+
+function bindUpload() {
+  var dropZone  = $('upload-drop-zone');
+  var fileInput = $('upload-file-input');
+  var goBtn     = $('btn-upload-go');
+  var btn       = $('btn-upload');
+
+  if (btn) btn.addEventListener('click', openUpload);
+
+  // File input change
+  fileInput.addEventListener('change', function() {
+    addUploadFiles(Array.prototype.slice.call(fileInput.files));
+  });
+
+  // Click zone → open file picker
+  dropZone.addEventListener('click', function(e) {
+    if (e.target !== fileInput) fileInput.click();
+  });
+
+  // Drag-over drop zone
+  dropZone.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    dropZone.className = dropZone.className.indexOf('drag-over') < 0
+      ? dropZone.className + ' drag-over' : dropZone.className;
+  });
+  dropZone.addEventListener('dragleave', function() {
+    dropZone.className = dropZone.className.replace(/\s*drag-over\b/g, '');
+  });
+  dropZone.addEventListener('drop', function(e) {
+    e.preventDefault();
+    dropZone.className = dropZone.className.replace(/\s*drag-over\b/g, '');
+    addUploadFiles(Array.prototype.slice.call(e.dataTransfer.files));
+  });
+
+  goBtn.addEventListener('click', executeUpload);
+}
+
+function addUploadFiles(files) {
+  S._uploadFiles = S._uploadFiles || [];
+  for (var i = 0; i < files.length; i++) {
+    S._uploadFiles.push(files[i]);
+  }
+  renderUploadFileList();
+}
+
+function renderUploadFileList() {
+  var container = $('upload-file-list');
+  container.innerHTML = '';
+  var files = S._uploadFiles || [];
+  for (var i = 0; i < files.length; i++) {
+    (function(f) {
+      var item = document.createElement('div');
+      item.className = 'upload-file-item';
+      var sizeStr = f.size > 1048576
+        ? (f.size / 1048576).toFixed(1) + ' MB'
+        : (f.size > 1024 ? (f.size / 1024).toFixed(0) + ' KB' : f.size + ' B');
+      item.innerHTML =
+        '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6z"/><polyline points="9,2 9,6 13,6"/></svg>' +
+        '<span class="uf-name">' + esc(f.name) + '</span>' +
+        '<span class="uf-size">' + sizeStr + '</span>' +
+        '<span class="uf-status uf-wait" id="uf-status-' + i + '">…</span>';
+      container.appendChild(item);
+    })(files[i]);
+  }
+}
+
+function executeUpload() {
+  var files = S._uploadFiles || [];
+  if (!files.length) { closeModal('modal-upload'); return; }
+  var dest  = $('upload-dest-path').textContent || S.root;
+  var total = files.length, failed = 0;
+  var goBtn = $('btn-upload-go');
+  goBtn.disabled = true;
+  var lastName = '';
+
+  function uploadOne(idx) {
+    if (idx >= files.length) {
+      // All done
+      goBtn.disabled = false;
+      var ok = total - failed;
+      statusMsg(t('msgUploaded') + ': ' + ok + '/' + total);
+      S._uploadFiles = [];
+      closeModal('modal-upload');
+      S.openDirs[dest] = true;
+      openRoot(S.root).then(function() {
+        if (lastName) {
+          setTimeout(function() {
+            highlightInTree(dest + S.sep + lastName);
+          }, 300);
+        }
+      });
+      return;
+    }
+
+    var f       = files[idx];
+    var statusEl = document.getElementById('uf-status-' + idx);
+    lastName = f.name;
+
+    // Use FormData + fetch for proper binary upload
+    var fd  = new FormData();
+    fd.append('file', f, f.name);
+    var uploadUrl = '/api/upload?dest=' + enc(dest);
+
+    fetch(uploadUrl, { method: 'POST', body: fd })
+      .then(function(r) { return r.json(); })
+      .then(function(res) {
+        var ok = res.ok || (res.results && res.results[0] && res.results[0].ok);
+        if (!ok) {
+          failed++;
+          if (statusEl) { statusEl.textContent = '✗'; statusEl.className = 'uf-status uf-err'; }
+        } else {
+          if (statusEl) { statusEl.textContent = '✓'; statusEl.className = 'uf-status uf-ok'; }
+        }
+        uploadOne(idx + 1);
+      })
+      .catch(function() {
+        failed++;
+        if (statusEl) { statusEl.textContent = '✗'; statusEl.className = 'uf-status uf-err'; }
+        uploadOne(idx + 1);
+      });
+  }
+  uploadOne(0);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LONG-PRESS CONTEXT MENU (mobile / touch)
+   Shows context menu after 500ms hold
+═══════════════════════════════════════════════════════════════ */
+function bindLongPress() {
+  var tree = $('file-tree');
+  var _lpTimer = null;
+  var _lpTarget = null;
+
+  tree.addEventListener('touchstart', function(e) {
+    var item = e.target.closest ? e.target.closest('.tree-item') : null;
+    if (!item) return;
+    _lpTarget = item;
+    _lpTimer = setTimeout(function() {
+      _lpTimer = null;
+      // Vibrate if supported (Android)
+      if (navigator.vibrate) navigator.vibrate(30);
+      // Add visual feedback
+      item.className += ' long-press-active';
+      setTimeout(function() {
+        item.className = item.className.replace(/\s*long-press-active\b/g, '');
+      }, 500);
+      // Get the node and show context menu at touch position
+      var touch = e.touches[0];
+      var node = nodeByPath(item.dataset.path);
+      if (node) {
+        selectItem(node, item);
+        // Simulate contextmenu event at touch position
+        var fakeEvent = {
+          clientX: touch.clientX,
+          clientY: touch.clientY,
+          preventDefault: function() {}
+        };
+        showCtxMenu(fakeEvent, node);
+      }
+    }, 500);
+  }, { passive: true });
+
+  tree.addEventListener('touchend', function() {
+    if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; }
+  }, { passive: true });
+
+  tree.addEventListener('touchmove', function() {
+    if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; }
+  }, { passive: true });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TREE DRAG-AND-DROP MOVE
+   Drag a file/folder onto another folder to move it
+═══════════════════════════════════════════════════════════════ */
+function bindTreeDragMove() {
+  var tree = $('file-tree');
+  var _dragNode = null;
+  var _lastDropTarget = null;
+
+  // Use event delegation on the tree container
+  tree.addEventListener('dragstart', function(e) {
+    var item = e.target.closest ? e.target.closest('.tree-item') : null;
+    if (!item || !item.dataset.path) return;
+    _dragNode = nodeByPath(item.dataset.path);
+    if (!_dragNode) return;
+    // Mark source and set global flag to prevent file-upload drop
+    item.className += ' drag-src';
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', item.dataset.path);
+    S._treeDragSrcItem = item;
+    S._treeDragActive  = true;
+  });
+
+  tree.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    if (!_dragNode) return;
+    var item = e.target.closest ? e.target.closest('.tree-item') : null;
+    if (!item || item === S._treeDragSrcItem) return;
+    var targetNode = nodeByPath(item.dataset.path);
+    if (!targetNode) return;
+    // Only allow drop onto directories
+    if (targetNode.kind !== 'directory') return;
+    // Prevent dropping onto self or child
+    if (targetNode.path === _dragNode.path) return;
+    if (targetNode.path.indexOf(_dragNode.path + S.sep) === 0) return;
+
+    e.dataTransfer.dropEffect = 'move';
+    if (_lastDropTarget && _lastDropTarget !== item) {
+      _lastDropTarget.className = _lastDropTarget.className.replace(/\s*drop-target\b/g, '');
+    }
+    if (item.className.indexOf('drop-target') < 0) item.className += ' drop-target';
+    _lastDropTarget = item;
+  });
+
+  tree.addEventListener('dragleave', function(e) {
+    var item = e.target.closest ? e.target.closest('.tree-item') : null;
+    if (item) item.className = item.className.replace(/\s*drop-target\b/g, '');
+  });
+
+  tree.addEventListener('dragend', function() {
+    if (S._treeDragSrcItem) {
+      S._treeDragSrcItem.className = S._treeDragSrcItem.className.replace(/\s*drag-src\b/g, '');
+      S._treeDragSrcItem = null;
+    }
+    if (_lastDropTarget) {
+      _lastDropTarget.className = _lastDropTarget.className.replace(/\s*drop-target\b/g, '');
+      _lastDropTarget = null;
+    }
+    _dragNode = null;
+    S._treeDragActive = false;
+  });
+
+  tree.addEventListener('drop', function(e) {
+    e.preventDefault();
+    e.stopPropagation(); // prevent file-upload drop handler
+    if (!_dragNode) return;
+    var item = e.target.closest ? e.target.closest('.tree-item') : null;
+    if (!item) return;
+    var targetNode = nodeByPath(item.dataset.path);
+    if (!targetNode || targetNode.kind !== 'directory') return;
+    if (targetNode.path === _dragNode.path) return;
+    if (targetNode.path.indexOf(_dragNode.path + S.sep) === 0) return;
+
+    // Clean up drag styles
+    item.className = item.className.replace(/\s*drop-target\b/g, '');
+    if (S._treeDragSrcItem)
+      S._treeDragSrcItem.className = S._treeDragSrcItem.className.replace(/\s*drag-src\b/g, '');
+
+    S._treeDragActive = false;
+    // Save src info before clearing state
+    var srcPath  = _dragNode.path;
+    var srcName  = _dragNode.name;
+    var destDir  = targetNode.path;
+    var destPath = destDir + S.sep + srcName;
+    _dragNode = null;
+
+    if (srcPath === destPath) return; // same location
+
+    api.rename(srcPath, destPath)
+      .then(function(res) {
+        if (res && res.error) throw new Error(res.error);
+        statusMsg(t('moveSuccess') + ': ' + srcName);
+        S.openDirs[destDir] = true;
+        return openRoot(S.root).then(function() {
+          setTimeout(function() { highlightInTree(destPath); }, 300);
+        });
+      })
+      .catch(function(err) { statusMsg(t('msgError') + ': ' + err.message); });
+  });
+}
+
+/* helper: find node object from path string */
+function nodeByPath(p) {
+  if (!p) return null;
+  // Check selected first (fastest)
+  if (S.selected && S.selected.path === p) return S.selected;
+  // Recursive search through stored tree
+  function search(nodes) {
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].path === p) return nodes[i];
+      if (nodes[i].children && nodes[i].children.length) {
+        var found = search(nodes[i].children);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+  var r = search(S.tree || []);
+  if (r) return r;
+  // Fallback: build a minimal node from DOM data-* attributes
+  var el = document.querySelector('.tree-item[data-path="' + p.replace(/"/g, '\"') + '"]');
+  if (el) {
+    return { path: p, kind: el.dataset.kind || 'file',
+             name: p.split('/').pop().split('\\').pop(), isText: false };
+  }
+  return null;
+}
+
+

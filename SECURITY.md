@@ -199,3 +199,44 @@ FM_USER=admin FM_PASS_HASH=$(echo -n "yourpassword" | sha256sum | cut -d' ' -f1)
 # 4. For production: add Content-Security-Policy header in server.js
 #    (requires removing Google Fonts or adding fonts.googleapis.com to CSP)
 ```
+
+---
+
+## Access Control (conf.json) – Security Risks
+
+### 🟠 MEDIUM — Ancestor Directory Promotion
+
+**Behavior:** When access control is active, directories that are ancestors of an allow-rule's base path are automatically shown as navigable containers. For example, if `allow /a/b/c/*` is set, then `/a` and `/a/b` become accessible as navigation containers even though they aren't explicitly allowed.
+
+**Risk:** A user can see directory names above the intended allow root. No files outside the allowed rules can be read — only directory names are exposed.
+
+**Mitigation:** If you want to hide parent directory names too, start the allow rules from the exact path you want visible.
+
+---
+
+### 🟡 LOW — Rule Order and Specificity
+
+**Behavior:** Rules are evaluated by **longest-base-match** (most specific wins), not declaration order.
+
+**Risk:** Operators familiar with first-match systems (nginx, Apache) might write rules expecting declaration-order evaluation. The result could be unexpectedly allowing or denying paths.
+
+**Mitigation:** Document this behavior clearly (it is documented in this file and README). The longest-match approach is the only way to make `deny /*` + `allow subtree` work correctly.
+
+---
+
+### 🟡 LOW — Path Traversal via Symlinks in Allowed Paths
+
+**Risk:** If an allowed path (e.g. `/docs/*`) contains a symlink pointing outside the intended scope (e.g. `/docs/link → /etc`), the symlink target becomes accessible.
+
+**Mitigation:** The server uses `path.resolve()` on all paths. However, symlink targets are not restricted to the allow-rule base. If your environment may have untrusted symlinks, add symlink checking (e.g. compare `fs.realpathSync()` result against allowed bases).
+
+---
+
+### ℹ️ INFO — Zip/Unzip Uses System Commands
+
+`zip` and `unzip` are called via `child_process.execFile` on Linux/macOS, and PowerShell `Compress-Archive`/`Expand-Archive` on Windows.
+
+**Risk:** If the system `zip`/`unzip` binary is not installed, the feature returns an error (gracefully handled). No shell injection is possible as `execFile` is used (not `exec` with shell:true) on Unix; the PowerShell commands use parameterized arguments.
+
+**Mitigation:** Paths passed to zip/unzip are access-control-checked before the command is invoked.
+

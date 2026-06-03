@@ -53,7 +53,12 @@ var S = {
   root: null, sep: '/', selected: null, activeFile: null,
   isEditing: false, clipboard: null, recentFolders: [],
   fileCache: {}, platform: 'linux', tab: 'folder', ws: null,
-  openDirs: {}, newItemContext: null   // openDirs: path -> true
+  openDirs: {}, newItemContext: null,
+  tree: [], _uploadFiles: [],
+  enabledDownload: true,
+  enabledUnzip:    true,
+  maxUploadMB:     20,
+  _treeDragActive: false
 };
 
 /* ── API ─────────────────────────────────────────────────────── */
@@ -111,9 +116,14 @@ function bootApp() {
   $('login-screen').style.display = 'none';
   $('app').style.display = 'flex';
   api.info().then(function(info) {
-    S.platform = info.platform;
-    S.sep      = info.sep;
+    S.platform        = info.platform;
+    S.sep             = info.sep;
+    S.enabledDownload = info.enabledDownload !== false; // default true when no conf
+    S.enabledUnzip    = info.enabledUnzip    !== false;
+    S.maxUploadMB     = (typeof info.maxUploadMB === 'number' && info.maxUploadMB > 0)
+                        ? info.maxUploadMB : 20;
     $('server-info').textContent = info.hostname + ' · ' + location.host;
+    applyFeatureFlags();
   }).catch(function() {});
 
   bindTabs();
@@ -129,6 +139,7 @@ function bootApp() {
   bindTreeDragMove();
   connectWS();
   applyI18n();
+  applyFeatureFlags(); // apply defaults immediately; will re-apply when api.info resolves
 
   var params  = new URLSearchParams(location.search);
   var urlRoot = params.get('root');
@@ -323,12 +334,14 @@ function buildNodes(nodes, parent, depth) {
             delete S.openDirs[node.path];
           }
           updateStatus(node.path);
+        setFileStats(null); // clear file stats for directories
         });
       } else {
         item.addEventListener('click', function(e) {
           e.stopPropagation();
           selectItem(node, item);
           updateStatus(node.path, node.name);
+          setFileStats(node);
         });
         item.addEventListener('dblclick', function() { openFileNode(node); });
       }
@@ -630,6 +643,26 @@ function resolveImg(src, baseDir) {
 /* ═══════════════════════════════════════════════════════════════
    TABS
 ═══════════════════════════════════════════════════════════════ */
+/**
+ * Apply feature flags from server config.
+ * Hide/show download and unzip context menu items and toolbar.
+ */
+function applyFeatureFlags() {
+  var menu = $('ctx-menu');
+  if (!menu) return;
+  // Download context menu item
+  qsa('[data-action="download"]', menu).forEach(function(el) {
+    el.style.display = S.enabledDownload ? 'flex' : 'none';
+  });
+  // Unzip context menu item (ctx-zip-only) — permanently hide when disabled
+  if (!S.enabledUnzip) {
+    qsa('.ctx-zip-only', menu).forEach(function(el) {
+      el.style.display = 'none';
+    });
+  }
+  // Keyboard shortcut Ctrl+D: guard is handled inline in bindShortcuts
+}
+
 function bindTabs() {
   var tabs = qsa('.tab');
   for (var i = 0; i < tabs.length; i++) {
@@ -729,13 +762,35 @@ function bindContextMenu() {
 }
 
 function showCtxMenu(e, node) {
-  var menu   = $('ctx-menu');
-  var textEl = menu.querySelector('.ctx-text-only');
-  var dirEl  = menu.querySelector('.ctx-dir-only');
-  textEl.style.display = (node.kind === 'file' && node.isText) ? 'flex' : 'none';
-  dirEl.style.display  = node.kind === 'directory' ? 'flex' : 'none';
+  var menu = $('ctx-menu');
+  var ext  = getExt(node.name);
+  var isDir  = node.kind === 'directory';
+  var isFile = node.kind === 'file';
+  var isZip  = isFile && ext === 'zip';
+
+  // Show/hide each conditional item by class
+  // ctx-text-only: edit text (text files only)
+  qsa('.ctx-text-only', menu).forEach(function(el) {
+    el.style.display = (isFile && node.isText) ? 'flex' : 'none';
+  });
+  // ctx-dir-only: set-root (directories only)
+  qsa('.ctx-dir-only', menu).forEach(function(el) {
+    el.style.display = isDir ? 'flex' : 'none';
+  });
+  // ctx-zip-only: unzip (.zip files only) — also check enabledUnzip flag
+  qsa('.ctx-zip-only', menu).forEach(function(el) {
+    el.style.display = (isZip && S.enabledUnzip) ? 'flex' : 'none';
+  });
+  // ctx-dir-zip: compress to zip (directories OR any single file)
+  qsa('.ctx-dir-zip', menu).forEach(function(el) {
+    el.style.display = (isDir || isFile) ? 'flex' : 'none';
+  });
+  // download item visibility (flag-controlled; already set by applyFeatureFlags but re-apply here)
+  qsa('[data-action="download"]', menu).forEach(function(el) {
+    el.style.display = S.enabledDownload ? 'flex' : 'none';
+  });
+
   menu.style.display = 'block';
-  // Position after rendering
   setTimeout(function() {
     var x = Math.min(e.clientX, window.innerWidth  - menu.offsetWidth  - 8);
     var y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8);
@@ -1072,6 +1127,38 @@ function closeAllModals() {
 /* ═══════════════════════════════════════════════════════════════
    STATUS BAR
 ═══════════════════════════════════════════════════════════════ */
+/**
+ * Display file size and timestamps in the status bar.
+ */
+function setFileStats(node) {
+  var el = $('status-stats');
+  if (!el) return;
+  if (!node || node.kind !== 'file') { el.textContent = ''; return; }
+  var parts = [];
+  if (node.size != null) {
+    var s = node.size;
+    var sizeStr = s >= 1073741824 ? (s / 1073741824).toFixed(1) + ' GB'
+                : s >= 1048576   ? (s / 1048576).toFixed(1)   + ' MB'
+                : s >= 1024      ? Math.round(s / 1024)        + ' KB'
+                : s + ' B';
+    parts.push(sizeStr);
+  }
+  if (node.mtime) {
+    parts.push((currentLang === 'ja' ? '更新: ' : 'mod: ') + formatDate(new Date(node.mtime)));
+  }
+  if (node.birthtime && Math.abs(node.birthtime - node.mtime) > 1000) {
+    parts.push((currentLang === 'ja' ? '作成: ' : 'cre: ') + formatDate(new Date(node.birthtime)));
+  }
+  el.textContent = parts.join('  │  ');
+}
+
+function formatDate(d) {
+  var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+       + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+
 function updateStatus(pathStr, file) {
   $('status-path').textContent = pathStr || '—';
   $('status-file').textContent = file || '';
@@ -1096,7 +1183,7 @@ function bindShortcuts() {
     if (ctrl && e.key === 'o') { e.preventDefault(); openFolderModal(); return; }
     if (ctrl && e.key === 's') { e.preventDefault(); saveFile(); return; }
     if (ctrl && e.key === 'u') { e.preventDefault(); openUpload(); return; }
-    if (ctrl && e.key === 'd') { e.preventDefault(); doDownload(); return; }
+    if (ctrl && e.key === 'd' && S.enabledDownload) { e.preventDefault(); doDownload(); return; }
     if (!inInput) {
       if (ctrl && e.key === 'c') { e.preventDefault(); doCopy(); return; }
       if (ctrl && e.key === 'x') { e.preventDefault(); doCut(); return; }
@@ -1194,8 +1281,10 @@ function openMedia(node) {
    ZIP / UNZIP
 ═══════════════════════════════════════════════════════════════ */
 function doZip() {
-  if (!S.selected || S.selected.kind !== 'directory') return;
+  if (!S.selected) return;
   var node = S.selected;
+  // Allow both directories and files to be zipped
+  if (node.kind !== 'directory' && node.kind !== 'file') return;
   statusMsg(t('msgZipping'));
   api.zip(node.path).then(function(res) {
     if (res.error) { statusMsg(t('msgError') + ': ' + res.error); return; }
@@ -1205,6 +1294,7 @@ function doZip() {
 }
 
 function doUnzip() {
+  if (!S.enabledUnzip) return; // disabled by conf
   if (!S.selected || S.selected.kind !== 'file') return;
   var node = S.selected;
   statusMsg(t('msgUnzipping'));
@@ -1221,6 +1311,7 @@ function doUnzip() {
    File → direct download; Folder → zip then download
 ═══════════════════════════════════════════════════════════════ */
 function doDownload() {
+  if (!S.enabledDownload) return; // disabled by conf
   if (!S.selected) return; // no selection → do nothing
   var node = S.selected;
   var url;
@@ -1250,7 +1341,6 @@ function doDownload() {
 ═══════════════════════════════════════════════════════════════ */
 function openUpload() {
   if (!S.root) { statusMsg(t('msgNoRoot')); return; }
-  // Determine upload destination
   var dest = S.root;
   if (S.selected && S.selected.kind === 'directory') dest = S.selected.path;
   else if (S.selected && S.selected.kind === 'file')  dest = parentPath(S.selected.path);
@@ -1258,6 +1348,9 @@ function openUpload() {
   $('upload-file-list').innerHTML = '';
   $('upload-file-input').value = '';
   S._uploadFiles = [];
+  // Show size limit in modal
+  var limitEl = $('upload-size-limit');
+  if (limitEl) limitEl.textContent = t('uploadSizeLimit') + ': ' + S.maxUploadMB + ' MB';
   openModal('modal-upload');
 }
 
@@ -1265,25 +1358,49 @@ function bindUpload() {
   var dropZone  = $('upload-drop-zone');
   var fileInput = $('upload-file-input');
   var goBtn     = $('btn-upload-go');
-  var btn       = $('btn-upload');
+  var toolbar   = $('btn-upload');
+  var selectBtn = $('btn-select-files');
 
-  if (btn) btn.addEventListener('click', openUpload);
+  // Toolbar upload button
+  if (toolbar) toolbar.addEventListener('click', openUpload);
 
-  // File input change
-  fileInput.addEventListener('change', function() {
-    addUploadFiles(Array.prototype.slice.call(fileInput.files));
-  });
+  // "Select Files" button inside modal — explicit click on input (iOS-safe)
+  if (selectBtn) {
+    selectBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      // Reset value so same file can be re-selected on iOS
+      fileInput.value = '';
+      fileInput.click();
+    });
+  }
 
-  // Click zone → open file picker
+  // Drop zone click (desktop) — also triggers picker
   dropZone.addEventListener('click', function(e) {
-    if (e.target !== fileInput) fileInput.click();
+    // Avoid double-trigger when btn-select-files is inside drop zone
+    if (e.target && e.target.closest && e.target.closest('#btn-select-files')) return;
+    if (e.target && e.target.id === 'btn-select-files') return;
+    fileInput.value = '';
+    fileInput.click();
   });
 
-  // Drag-over drop zone
+  // File selection — listen to both 'change' and 'input' for iOS compatibility
+  function onFilesSelected() {
+    var files = Array.prototype.slice.call(fileInput.files || []);
+    if (!files.length) return;
+    addUploadFiles(files);
+    // Reset so the same file can be re-picked on iOS
+    // (don't reset immediately — keep files reference alive until addUploadFiles)
+    setTimeout(function() { fileInput.value = ''; }, 100);
+  }
+  fileInput.addEventListener('change', onFilesSelected);
+  fileInput.addEventListener('input',  onFilesSelected); // iOS fallback
+
+  // Drag-over drop zone (desktop)
   dropZone.addEventListener('dragover', function(e) {
     e.preventDefault();
-    dropZone.className = dropZone.className.indexOf('drag-over') < 0
-      ? dropZone.className + ' drag-over' : dropZone.className;
+    if (dropZone.className.indexOf('drag-over') < 0)
+      dropZone.className += ' drag-over';
   });
   dropZone.addEventListener('dragleave', function() {
     dropZone.className = dropZone.className.replace(/\s*drag-over\b/g, '');
@@ -1299,8 +1416,14 @@ function bindUpload() {
 
 function addUploadFiles(files) {
   S._uploadFiles = S._uploadFiles || [];
+  var limitBytes = S.maxUploadMB * 1024 * 1024;
   for (var i = 0; i < files.length; i++) {
-    S._uploadFiles.push(files[i]);
+    var f = files[i];
+    if (f.size > limitBytes) {
+      // Mark oversized files so they show as errors immediately
+      f._oversized = true;
+    }
+    S._uploadFiles.push(f);
   }
   renderUploadFileList();
 }
@@ -1316,11 +1439,15 @@ function renderUploadFileList() {
       var sizeStr = f.size > 1048576
         ? (f.size / 1048576).toFixed(1) + ' MB'
         : (f.size > 1024 ? (f.size / 1024).toFixed(0) + ' KB' : f.size + ' B');
+      var oversized = f._oversized;
+      var initStatus = oversized
+        ? '<span class="uf-status uf-err" id="uf-status-' + i + '">✗ ' + t('uploadTooLarge') + '</span>'
+        : '<span class="uf-status uf-wait" id="uf-status-' + i + '">…</span>';
       item.innerHTML =
         '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6z"/><polyline points="9,2 9,6 13,6"/></svg>' +
-        '<span class="uf-name">' + esc(f.name) + '</span>' +
+        '<span class="uf-name' + (oversized ? ' uf-oversized' : '') + '">' + esc(f.name) + '</span>' +
         '<span class="uf-size">' + sizeStr + '</span>' +
-        '<span class="uf-status uf-wait" id="uf-status-' + i + '">…</span>';
+        initStatus;
       container.appendChild(item);
     })(files[i]);
   }
@@ -1358,6 +1485,13 @@ function executeUpload() {
     var statusEl = document.getElementById('uf-status-' + idx);
     lastName = f.name;
 
+    // Skip files flagged as oversized (already shown as error in list)
+    if (f._oversized) {
+      failed++;
+      uploadOne(idx + 1);
+      return;
+    }
+
     // Use FormData + fetch for proper binary upload
     var fd  = new FormData();
     fd.append('file', f, f.name);
@@ -1367,9 +1501,11 @@ function executeUpload() {
       .then(function(r) { return r.json(); })
       .then(function(res) {
         var ok = res.ok || (res.results && res.results[0] && res.results[0].ok);
+        var errMsg = res.error || (res.results && res.results[0] && res.results[0].error) || '';
         if (!ok) {
           failed++;
-          if (statusEl) { statusEl.textContent = '✗'; statusEl.className = 'uf-status uf-err'; }
+          var errTxt = errMsg ? ('✗ ' + errMsg) : '✗';
+          if (statusEl) { statusEl.textContent = errTxt; statusEl.className = 'uf-status uf-err'; }
         } else {
           if (statusEl) { statusEl.textContent = '✓'; statusEl.className = 'uf-status uf-ok'; }
         }

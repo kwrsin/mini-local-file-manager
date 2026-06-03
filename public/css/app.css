@@ -167,7 +167,9 @@ kbd { font-family:var(--font-mono); font-size:10px; background:var(--c-raised); 
 .status-icon svg { width:12px; height:12px; }
 #status-path { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; -webkit-flex:1;flex:1; min-width:0; }
 .status-sep { opacity:.4; -webkit-flex-shrink:0;flex-shrink:0; }
-.status-file { color:rgba(255,255,255,.45); font-style:italic; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px; }
+.status-file  { color:rgba(255,255,255,.45); font-style:italic; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:200px; }
+.status-stats { color:rgba(255,255,255,.5); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-left:6px; flex-shrink:0; }
+@media (max-width:600px) { .status-stats { display:none; } }
 .status-right { margin-left:auto; color:rgba(255,255,255,.85); font-style:normal; white-space:nowrap; -webkit-flex-shrink:0;flex-shrink:0; }
 
 /* ── Context Menu ───────────────────────────────────────────── */
@@ -388,3 +390,11 @@ kbd { font-family:var(--font-mono); font-size:10px; background:var(--c-raised); 
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 .tree-item.long-press-active { animation: lp-pulse .5s ease; }
+
+/* ── Upload file list extras ─────────────────────────────────── */
+.uf-oversized { text-decoration: line-through; opacity: .6; }
+.upload-size-info {
+  font-size: 11px; color: var(--c-text-3);
+  padding: 2px 0;
+  font-family: var(--font-mono);
+}

@@ -1,5 +1,8 @@
 {
   "port": 3000,
+  "enabledDownload": true,
+  "enabledUnzip": true,
+  "filesize": 20,
   "access": [
     { "deny":  "/*" },
     { "allow": "/Users/yourname/Documents/*" },

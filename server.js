@@ -135,7 +135,13 @@ function loadConf(confPath) {
   if (!('access' in conf)) {
     // No access array → disable access control (all paths allowed)
     console.log('  [conf] No "access" key found — access control disabled.');
-    return { port: parseConfPort(conf), rules: null };
+    return {
+      port:            parseConfPort(conf),
+      rules:           null,
+      enabledDownload: parseConfBool(conf, 'enabledDownload'),
+      enabledUnzip:    parseConfBool(conf, 'enabledUnzip'),
+      maxUploadMB:     parseConfFilesize(conf),
+    };
   }
 
   if (!Array.isArray(conf.access)) {
@@ -193,7 +199,13 @@ function loadConf(confPath) {
     console.log(`  [conf] ${type.toUpperCase().padEnd(5)} ${resolvedPattern}`);
   }
 
-  return { port: parseConfPort(conf), rules };
+  return {
+    port:            parseConfPort(conf),
+    rules,
+    enabledDownload: parseConfBool(conf, 'enabledDownload'),
+    enabledUnzip:    parseConfBool(conf, 'enabledUnzip'),
+    maxUploadMB:     parseConfFilesize(conf),
+  };
 }
 
 /** Parse optional port from conf object */
@@ -203,6 +215,26 @@ function parseConfPort(conf) {
     return conf.port;
   }
   return null;
+}
+
+/** Parse optional boolean flags from conf */
+function parseConfBool(conf, key) {
+  if (conf && typeof conf[key] === 'boolean') return conf[key];
+  return false; // implicit default: false
+}
+
+const DEFAULT_MAX_UPLOAD_MB = 20;
+
+/**
+ * Parse filesize from conf (in MB).
+ * Must be a positive number. Invalid or absent → DEFAULT_MAX_UPLOAD_MB.
+ */
+function parseConfFilesize(conf) {
+  if (!conf) return DEFAULT_MAX_UPLOAD_MB;
+  const v = conf.filesize;
+  if (typeof v === 'number' && isFinite(v) && v > 0) return v;
+  // 0 or negative or non-number → use default
+  return DEFAULT_MAX_UPLOAD_MB;
 }
 
 /**
@@ -325,25 +357,33 @@ function checkDirAccess(dirPath) {
 }
 
 // ── State variables ───────────────────────────────────────────
-let USE_ACCESS_CONTROL = false;
-let ACCESS_RULES = [];  // [{ type, pattern, base, wildcard, rawPattern }]
-let CONF_PORT    = null;
+let USE_ACCESS_CONTROL  = false;
+let ACCESS_RULES        = [];  // [{ type, pattern, base, rawPattern }]
+let CONF_PORT           = null;
+let ENABLED_DOWNLOAD    = true;  // true when no conf; false when conf present but key absent
+let ENABLED_UNZIP       = true;  // same
+let MAX_UPLOAD_BYTES    = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024;  // default 20 MB
 
 // ── Initialize conf ───────────────────────────────────────────
 if (_confArg) {
   console.log(`\n[conf] Loading: ${path.resolve(_confArg)}`);
-  const { port, rules } = loadConf(_confArg);
-  CONF_PORT = port;
-  if (rules === null) {
-    // access key absent → access control disabled
+  const confResult = loadConf(_confArg);
+  CONF_PORT        = confResult.port;
+  ENABLED_DOWNLOAD  = confResult.enabledDownload;
+  ENABLED_UNZIP     = confResult.enabledUnzip;
+  MAX_UPLOAD_BYTES  = confResult.maxUploadMB * 1024 * 1024;
+  if (confResult.rules === null) {
     USE_ACCESS_CONTROL = false;
     ACCESS_RULES = [];
   } else {
     USE_ACCESS_CONTROL = true;
-    ACCESS_RULES = rules;
+    ACCESS_RULES = confResult.rules;
     console.log(`[conf] ${ACCESS_RULES.length} rule(s) loaded. Default: DENY`);
   }
-  if (CONF_PORT) console.log(`[conf] port from conf: ${CONF_PORT}`);
+  if (CONF_PORT)       console.log(`[conf] port            : ${CONF_PORT}`);
+  console.log(`[conf] enabledDownload : ${ENABLED_DOWNLOAD}`);
+  console.log(`[conf] enabledUnzip    : ${ENABLED_UNZIP}`);
+  console.log(`[conf] maxUploadMB     : ${confResult.maxUploadMB} MB`);
   console.log('');
 }
 
@@ -490,6 +530,61 @@ function sendJSON(res, status, data) {
 function sendDenied(res) {
   sendJSON(res, 403, { error: 'Access denied by access control policy.' });
 }
+
+/**
+ * Build a Content-Disposition header that correctly handles non-ASCII filenames.
+ * Uses RFC 5987 encoding: filename*=UTF-8''<percent-encoded>
+ * Also includes a fallback ASCII filename for older clients.
+ */
+/**
+ * Audit log — write one CSV line to stderr.
+ *
+ * Format:  date,action,path,ip address
+ * Date:    YYYYmmdd HH:MM:SS.mmm
+ * The header line is printed once when the server starts.
+ */
+const AUDIT_HEADER_PRINTED = { done: false };
+
+function auditLog(action, targetPath, req) {
+  // Print CSV header on first call
+  if (!AUDIT_HEADER_PRINTED.done) {
+    process.stderr.write('date,action,path,ip address\n');
+    AUDIT_HEADER_PRINTED.done = true;
+  }
+
+  const now   = new Date();
+  const pad   = (n, w) => String(n).padStart(w || 2, '0');
+  const date  = pad(now.getFullYear(), 4)
+              + pad(now.getMonth() + 1) + pad(now.getDate())
+              + ' '
+              + pad(now.getHours())   + ':' + pad(now.getMinutes())
+              + ':' + pad(now.getSeconds())
+              + '.' + pad(now.getMilliseconds(), 3);
+
+  const ip    = req
+    ? ((req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim())
+    : '';
+
+  // CSV-escape a field: wrap in quotes if it contains comma/quote/newline
+  function csvField(v) {
+    v = String(v == null ? '' : v);
+    if (v.includes(',') || v.includes('"') || v.includes('\n')) {
+      return '"' + v.replace(/"/g, '""') + '"';
+    }
+    return v;
+  }
+
+  const line = [csvField(date), csvField(action), csvField(targetPath || ''), csvField(ip)].join(',');
+  process.stderr.write(line + '\n');
+}
+
+function contentDisposition(filename, disposition) {
+  disposition = disposition || 'attachment';
+  const asciiName = filename.replace(/[^\x20-\x7E]/g, '_').replace(/"/g, '\\"');
+  const utf8Name  = encodeURIComponent(filename).replace(/'/g, '%27');
+  const rfc5987   = "UTF-8''" + utf8Name;
+  return disposition + "; filename=\"" + asciiName + "\"; filename*=" + rfc5987;
+}
 async function readBody(req) {
   return new Promise((resolve, reject) => {
     const c = [];
@@ -598,7 +693,9 @@ async function handleAPI(req, res, pathname, query) {
       await fsp.access(root, fs.constants.R_OK);
       const st = await fsp.stat(root);
       if (!st.isDirectory()) return sendJSON(res, 400, { error: 'Not a directory' });
-      sendJSON(res, 200, { tree: await buildTree(root), root });
+      const treeData = await buildTree(root);
+      auditLog('opened', root, req);
+      sendJSON(res, 200, { tree: treeData, root });
     } catch(e) { sendJSON(res, 404, { error: `Path not found: ${e.message}` }); }
     return;
   }
@@ -630,6 +727,7 @@ async function handleAPI(req, res, pathname, query) {
       const content = await fsp.readFile(fp, 'utf8');
       let writable = false;
       try { await fsp.access(fp, fs.constants.W_OK); writable = true; } catch(e) {}
+      auditLog('opened', fp, req);
       sendJSON(res, 200, { content, path: fp, writable });
     } catch(e) { sendJSON(res, 500, { error: e.message }); }
     return;
@@ -666,6 +764,7 @@ async function handleAPI(req, res, pathname, query) {
       try { await fsp.access(dir, fs.constants.W_OK); }
       catch(e) { return sendJSON(res, 403, { error: 'Permission denied' }); }
       await fsp.writeFile(body.path, body.content || '', 'utf8');
+      auditLog('created', body.path, req);
       sendJSON(res, 200, { ok: true });
     } catch(e) { sendJSON(res, 500, { error: e.message }); }
     return;
@@ -679,6 +778,7 @@ async function handleAPI(req, res, pathname, query) {
       try { await fsp.access(body.path, fs.constants.W_OK); }
       catch(e) { return sendJSON(res, 403, { error: 'Permission denied (read-only)' }); }
       await fsp.writeFile(body.path, body.content, 'utf8');
+      auditLog('saved', body.path, req);
       sendJSON(res, 200, { ok: true });
     } catch(e) { sendJSON(res, 500, { error: e.message }); }
     return;
@@ -694,6 +794,7 @@ async function handleAPI(req, res, pathname, query) {
       catch(e) { return sendJSON(res, 403, { error: 'Permission denied' }); }
       if (st.isDirectory()) await fsp.rm(fp, { recursive: true, force: true });
       else await fsp.unlink(fp);
+      auditLog('deleted', fp, req);
       sendJSON(res, 200, { ok: true });
     } catch(e) { sendJSON(res, 500, { error: e.message }); }
     return;
@@ -708,6 +809,7 @@ async function handleAPI(req, res, pathname, query) {
       try { await fsp.access(path.dirname(body.from), fs.constants.W_OK); }
       catch(e) { return sendJSON(res, 403, { error: 'Permission denied' }); }
       await fsp.rename(body.from, body.to);
+      auditLog('renamed', body.from + ' -> ' + body.to, req);
       sendJSON(res, 200, { ok: true });
     } catch(e) { sendJSON(res, 500, { error: e.message }); }
     return;
@@ -720,6 +822,7 @@ async function handleAPI(req, res, pathname, query) {
       if (!checkAccess(body.from).allowed) return sendDenied(res);
       if (!checkAccess(body.to).allowed)   return sendDenied(res);
       await copyRecursive(body.from, body.to);
+      auditLog('copied', body.from + ' -> ' + body.to, req);
       sendJSON(res, 200, { ok: true });
     } catch(e) { sendJSON(res, 500, { error: e.message }); }
     return;
@@ -740,18 +843,27 @@ async function handleAPI(req, res, pathname, query) {
 
 
   // ── POST /api/zip { path } ──────────────────────────────
-  // Compress a folder into <folder>.zip in the same parent directory
+  // Compress a folder OR a single file into <name>.zip in the same parent directory
   if (m === 'POST' && pathname === '/api/zip') {
     try {
       const body = JSON.parse(await readBody(req));
       const srcPath = body.path;
       if (!checkAccess(srcPath).allowed) return sendDenied(res);
       const st = await fsp.stat(srcPath);
-      if (!st.isDirectory()) return sendJSON(res, 400, { error: 'zip target must be a directory' });
       const parent  = path.dirname(srcPath);
       const name    = path.basename(srcPath);
-      const zipDest = path.join(parent, name + '.zip');
-      await zipDirectory(srcPath, zipDest);
+      // Prefer placing zip next to source; if parent not accessible, place inside source dir
+      let zipDest = path.join(parent, name + '.zip');
+      if (USE_ACCESS_CONTROL && !checkAccess(parent).allowed && st.isDirectory()) {
+        // Parent is blocked — place zip inside the source directory instead
+        zipDest = path.join(srcPath, name + '.zip');
+      }
+      if (st.isDirectory()) {
+        await zipDirectory(srcPath, zipDest);
+      } else {
+        await zipFile(srcPath, zipDest);
+      }
+      auditLog('created', zipDest, req);
       sendJSON(res, 200, { ok: true, dest: zipDest });
     } catch(e) { sendJSON(res, 500, { error: e.message }); }
     return;
@@ -760,17 +872,31 @@ async function handleAPI(req, res, pathname, query) {
   // ── POST /api/unzip { path } ────────────────────────────
   // Extract a .zip file into a folder with the same name (sans .zip) in the same directory
   if (m === 'POST' && pathname === '/api/unzip') {
+    if (!ENABLED_UNZIP) return sendJSON(res, 403, { error: 'Unzip is disabled.' });
     try {
       const body = JSON.parse(await readBody(req));
       const zipPath = body.path;
-      if (!checkAccess(zipPath).allowed) return sendDenied(res);
+      // For unzip, check the zip FILE's parent dir is accessible
+      // (the zip may have been created by the server itself outside the root)
+      const zipParent = path.dirname(zipPath);
+      if (USE_ACCESS_CONTROL && !checkAccess(zipPath).allowed) {
+        // Allow if zip parent is accessible (zip was created in accessible dir)
+        if (!checkDirAccess(zipParent).allowed) return sendDenied(res);
+      }
       if (!zipPath.toLowerCase().endsWith('.zip'))
         return sendJSON(res, 400, { error: 'file must be a .zip archive' });
       const parent  = path.dirname(zipPath);
       const name    = path.basename(zipPath, '.zip');
-      const destDir = path.join(parent, name);
+      let   destDir = path.join(parent, name);
+      // If destDir already exists as a FILE (e.g. unzipping foo.txt.zip → foo.txt exists),
+      // append _extracted to avoid collision
+      try {
+        const destSt = await fsp.stat(destDir);
+        if (!destSt.isDirectory()) destDir = destDir + '_extracted';
+      } catch(e) { /* destDir doesn't exist — fine */ }
       await fsp.mkdir(destDir, { recursive: true });
       await unzipArchive(zipPath, destDir);
+      auditLog('unzipped', zipPath + ' -> ' + destDir, req);
       sendJSON(res, 200, { ok: true, dest: destDir });
     } catch(e) { sendJSON(res, 500, { error: e.message }); }
     return;
@@ -791,6 +917,12 @@ async function handleAPI(req, res, pathname, query) {
       // Write permission on dest dir
       try { await fsp.access(dest, fs.constants.W_OK); }
       catch(e) { return sendJSON(res, 403, { error: 'Permission denied on destination' }); }
+      // Early reject if Content-Length header already exceeds limit
+      const contentLen = parseInt(req.headers['content-length'] || '0', 10);
+      if (contentLen > MAX_UPLOAD_BYTES + 65536) { // +64KB for multipart overhead
+        const limitMB = (MAX_UPLOAD_BYTES / (1024 * 1024)).toFixed(0);
+        return sendJSON(res, 413, { error: `Request exceeds upload size limit (${limitMB} MB)` });
+      }
 
       const ct = (req.headers['content-type'] || '');
       const filename = decodeURIComponent(req.headers['x-filename'] || '');
@@ -807,7 +939,14 @@ async function handleAPI(req, res, pathname, query) {
           const fp = path.join(dest, path.basename(file.filename));
           const fpAc = checkAccess(fp);
           if (!fpAc.allowed) { results.push({ name: file.filename, error: 'denied' }); continue; }
+          // File size check
+          if (file.data.length > MAX_UPLOAD_BYTES) {
+            const limitMB = (MAX_UPLOAD_BYTES / (1024 * 1024)).toFixed(0);
+            results.push({ name: file.filename, error: `File exceeds size limit (${limitMB} MB)` });
+            continue;
+          }
           await fsp.writeFile(fp, file.data);
+          auditLog('uploaded', fp, req);
           results.push({ name: file.filename, ok: true, path: fp });
         }
         return sendJSON(res, 200, { results });
@@ -819,7 +958,12 @@ async function handleAPI(req, res, pathname, query) {
         const fpAc = checkAccess(fp);
         if (!fpAc.allowed) return sendDenied(res);
         const buf = await readBodyBuffer(req);
+        if (buf.length > MAX_UPLOAD_BYTES) {
+          const limitMB = (MAX_UPLOAD_BYTES / (1024 * 1024)).toFixed(0);
+          return sendJSON(res, 413, { error: `File exceeds size limit (${limitMB} MB)` });
+        }
         await fsp.writeFile(fp, buf);
+        auditLog('uploaded', fp, req);
         return sendJSON(res, 200, { ok: true, path: fp, name: filename });
       }
 
@@ -831,6 +975,7 @@ async function handleAPI(req, res, pathname, query) {
   // ── GET /api/download?path=... ─────────────────────────
   // Download a single file (forces Content-Disposition: attachment)
   if (m === 'GET' && pathname === '/api/download') {
+    if (!ENABLED_DOWNLOAD) return sendJSON(res, 403, { error: 'Download is disabled.' });
     const fp = query.path;
     if (!fp) return send404(res);
     const ac = checkAccess(fp);
@@ -841,10 +986,11 @@ async function handleAPI(req, res, pathname, query) {
       if (!st.isFile()) return send404(res);
       const ext  = fp.split('.').pop().toLowerCase();
       const mime = MIME_BY_EXT[ext] || 'application/octet-stream';
+      auditLog('downloaded', fp, req);
       res.writeHead(200, {
         'Content-Type':        mime,
         'Content-Length':      st.size,
-        'Content-Disposition': 'attachment; filename="' + encodeURIComponent(path.basename(fp)) + '"',
+        'Content-Disposition': contentDisposition(path.basename(fp)),
         'Cache-Control':       'no-store',
       });
       fs.createReadStream(fp).pipe(res);
@@ -855,6 +1001,7 @@ async function handleAPI(req, res, pathname, query) {
   // ── GET /api/download-zip?path=... ─────────────────────
   // Zip a directory on the fly and stream it as a download
   if (m === 'GET' && pathname === '/api/download-zip') {
+    if (!ENABLED_DOWNLOAD) return sendJSON(res, 403, { error: 'Download is disabled.' });
     const dirPath = query.path;
     if (!dirPath) return send404(res);
     const ac = checkAccess(dirPath);
@@ -870,9 +1017,10 @@ async function handleAPI(req, res, pathname, query) {
       res.writeHead(200, {
         'Content-Type':        'application/zip',
         'Content-Length':      zipSt.size,
-        'Content-Disposition': 'attachment; filename="' + encodeURIComponent(zipName) + '"',
+        'Content-Disposition': contentDisposition(zipName),
         'Cache-Control':       'no-store',
       });
+      auditLog('downloaded', dirPath + ' (as zip)', req);
       const stream = fs.createReadStream(tmpZip);
       stream.pipe(res);
       stream.on('end', () => fsp.unlink(tmpZip).catch(() => {}));
@@ -897,6 +1045,8 @@ async function handleAPI(req, res, pathname, query) {
       platform: os.platform(), hostname: os.hostname(),
       homedir: os.homedir(), sep: path.sep,
       useAuth: USE_AUTH, useAccessControl: USE_ACCESS_CONTROL,
+      enabledDownload: ENABLED_DOWNLOAD, enabledUnzip: ENABLED_UNZIP,
+      maxUploadMB: MAX_UPLOAD_BYTES / (1024 * 1024),
     });
     return;
   }
@@ -922,11 +1072,21 @@ async function buildTree(dirPath) {
 
     let writable = false;
     try { await fsp.access(fp, fs.constants.W_OK); writable = true; } catch(ex) {}
+    // Get file stats (size + timestamps) for status bar display
+    let size = null, mtime = null, birthtime = null;
+    if (e.isFile()) {
+      try {
+        const st = await fsp.stat(fp);
+        size      = st.size;
+        mtime     = st.mtimeMs;
+        birthtime = st.birthtimeMs;
+      } catch(ex) {}
+    }
     nodes.push({
       name: e.name, path: fp,
       kind: e.isDirectory() ? 'directory' : 'file',
       isText: e.isFile() ? isTextFile(e.name) : false,
-      writable,
+      writable, size, mtime, birthtime,
       ext: e.isFile() ? e.name.split('.').pop().toLowerCase() : '',
     });
   }
@@ -992,6 +1152,23 @@ async function searchFiles(root, nameKw, contentKw, results, depth) {
 
 
 // ── Zip helpers ───────────────────────────────────────────────
+function zipFile(srcFile, destZip) {
+  return new Promise((resolve, reject) => {
+    const platform = os.platform();
+    const parent   = path.dirname(srcFile);
+    const name     = path.basename(srcFile);
+    if (platform === 'win32') {
+      const cmd = `Compress-Archive -Path "${srcFile}" -DestinationPath "${destZip}" -Force`;
+      exec(`powershell -Command "${cmd}"`, (err) => err ? reject(err) : resolve());
+    } else {
+      execFile('zip', ['-j', destZip, srcFile], { cwd: parent }, (err) => {
+        if (err) reject(new Error('zip failed: ' + err.message));
+        else resolve();
+      });
+    }
+  });
+}
+
 function zipDirectory(srcDir, destZip) {
   return new Promise((resolve, reject) => {
     const platform = os.platform();
@@ -1077,12 +1254,17 @@ server.listen(PORT, HOST, () => {
     l.forEach(i => { if (i.family === 'IPv4' && !i.internal) ips.push(i.address); }));
 
   console.log('┌──────────────────────────────────────────────────┐');
-  console.log('│       Mini Local File Manager  v2.4              │');
+  console.log('│       Mini Local File Manager  v2.5              │');
   console.log('├──────────────────────────────────────────────────┤');
   console.log(`│  Local   : http://localhost:${PORT}                  │`);
   ips.forEach(ip => console.log(`│  Network : http://${ip}:${PORT}             │`));
   if (USE_AUTH)           console.log(`│  Auth    : enabled (user: ${AUTH_USER})               │`);
   if (USE_ACCESS_CONTROL) console.log(`│  Access  : ${ACCESS_RULES.length} rule(s) active, default DENY      │`);
+  if (_confArg) {
+    console.log(`│  Download: ${ENABLED_DOWNLOAD ? 'enabled ' : 'disabled'}                                  │`);
+    console.log(`│  Unzip   : ${ENABLED_UNZIP    ? 'enabled ' : 'disabled'}                                  │`);
+    console.log(`│  Upload  : max ${(MAX_UPLOAD_BYTES/1024/1024).toFixed(0)} MB                                        │`);
+  }
   console.log('│  Ctrl+C  : stop                                  │');
   console.log('└──────────────────────────────────────────────────┘\n');
   startMDNS();

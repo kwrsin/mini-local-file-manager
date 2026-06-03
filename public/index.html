@@ -138,6 +138,7 @@
   <span id="status-path">—</span>
   <span id="status-sep" class="status-sep" style="display:none">›</span>
   <span id="status-file" class="status-file"></span>
+  <span id="status-stats" class="status-stats"></span>
   <span class="status-right" id="status-msg"></span>
 </footer>
 </div><!-- #app -->
@@ -271,13 +272,19 @@
       <div class="modal-section">
         <div class="modal-label" data-i18n="uploadDest">アップロード先</div>
         <div class="upload-dest-label" id="upload-dest-path">—</div>
+        <div class="upload-size-info" id="upload-size-limit"></div>
       </div>
       <div class="modal-section">
-        <label class="upload-drop-zone" id="upload-drop-zone">
-          <input type="file" id="upload-file-input" multiple style="display:none">
+        <!-- input is outside label to avoid iOS Safari event issues -->
+        <input type="file" id="upload-file-input" multiple accept="*/*" style="display:none">
+        <div class="upload-drop-zone" id="upload-drop-zone">
           <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M32 32l-8-8-8 8"/><line x1="24" y1="24" x2="24" y2="44"/><path d="M40.8 36A16 16 0 1 0 12 26.4"/></svg>
           <p data-i18n="upload">ファイルを選択またはドロップ</p>
-        </label>
+          <button class="btn-primary" id="btn-select-files" type="button">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6z"/><polyline points="9,2 9,6 13,6"/></svg>
+            <span data-i18n="selectFiles">ファイルを選択</span>
+          </button>
+        </div>
       </div>
       <div id="upload-file-list" class="upload-file-list"></div>
       <div class="modal-actions">

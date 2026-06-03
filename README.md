@@ -22,6 +22,61 @@ Browse, edit, create, rename and delete files on your local PC via any browser.
 
 ---
 
+
+## New in v2.5
+
+### conf.json — Full Reference
+
+```jsonc
+{
+  "port": 3000,              // optional; CLI port or PORT env takes priority
+
+  // --- Feature flags (default: true when no conf, false when conf present but key absent) ---
+  "enabledDownload": true,   // allow file/folder download (Ctrl+D)
+  "enabledUnzip":    true,   // allow .zip extraction
+  "filesize":        20,     // max upload size in MB (default 20; 0 or negative = use default)
+
+  // --- Path access control (optional; absent = all paths allowed) ---
+  "access": [
+    { "deny":  "/*" },                              // deny everything (implicit default)
+    { "allow": "/users/alice/documents/*" },
+    { "deny":  "/users/alice/documents/secrets/*" } // more specific rule wins
+  ]
+}
+```
+
+| Feature flag | Absent from conf | `false` | `true` |
+|---|---|---|---|
+| `enabledDownload` | allowed (no conf) / **blocked** (conf) | blocked | allowed |
+| `enabledUnzip`    | allowed (no conf) / **blocked** (conf) | blocked | allowed |
+| `filesize`        | 20 MB | — | N MB |
+
+### Audit Log (stderr)
+
+All file operations are logged to **stderr** in CSV format:
+
+```
+date,action,path,ip address
+20260101 10:10:00.222,opened,/users/alice/downloads,192.168.1.10
+20260101 10:11:00.333,uploaded,/users/alice/downloads/photo.jpg,192.168.1.10
+```
+
+**Actions:** `opened` · `created` · `saved` · `deleted` · `renamed` · `copied` · `uploaded` · `downloaded` · `unzipped`
+
+```bash
+# Redirect to log file
+node server.js 2>>audit.log
+# Split stdout and stderr
+node server.js 1>server.log 2>audit.log
+```
+
+### Status Bar File Info
+When a file is selected in the tree, the status bar shows:
+- File size (B / KB / MB / GB)
+- Last modified date/time
+- Created date/time (when different from modified)
+
+---
 ## Quick Start
 
 ```bash
@@ -71,8 +126,63 @@ This means a more specific allow/deny always overrides a less specific one.
 
 **Comments:** `// line comments` are supported in conf.json.
 
+
+## conf.json — Full Reference
+
+```jsonc
+{
+  // Server port (optional; overridden by CLI arg or PORT env var)
+  "port": 3000,
+
+  // Download permission (optional; default: false when conf present, true when no conf)
+  "enabledDownload": true,
+
+  // Unzip permission (optional; default: false when conf present, true when no conf)
+  "enabledUnzip": true,
+
+  // Path access rules (optional; if absent, all paths are allowed)
+  "access": [
+    { "deny":  "/*" },                             // deny everything (implicit default)
+    { "allow": "/users/alice/documents/*" },        // allow this subtree
+    { "deny":  "/users/alice/documents/secrets/*" } // override: deny this subtree
+  ]
+}
+```
+
+### Feature flags behavior
+
+| Scenario | `enabledDownload` | `enabledUnzip` |
+|----------|-------------------|----------------|
+| No conf.json | `true` (download allowed) | `true` (unzip allowed) |
+| conf.json present, key absent | `false` (download disabled) | `false` (unzip disabled) |
+| conf.json present, `true` | `true` | `true` |
+| conf.json present, `false` | `false` | `false` |
+
+When disabled, the context menu item is hidden and the API endpoint returns HTTP 403.
+
 ---
 
+## Audit Log (stderr)
+
+All file operations are written to **stderr** in CSV format:
+
+```
+date,action,path,ip address
+20260101 10:10:00.222,opened,/users/alice/downloads,192.168.1.10
+20260101 10:11:00.333,uploaded,/users/alice/downloads/photo.jpg,192.168.1.10
+```
+
+**Actions:** `opened` `created` `saved` `deleted` `renamed` `copied` `uploaded` `downloaded` `unzipped`
+
+**Redirect to file:**
+
+```bash
+node server.js 2>> audit.log
+# or separate stdout and stderr
+node server.js 1>server.log 2>audit.log
+```
+
+---
 ## New Features (v2.4)
 
 - 🎵 **Media player** — audio/video files open in a built-in player (mp3, m4a, wav, ogg, flac, mp4, webm, ogv…)

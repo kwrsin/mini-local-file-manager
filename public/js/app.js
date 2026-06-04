@@ -781,9 +781,9 @@ function showCtxMenu(e, node) {
   qsa('.ctx-zip-only', menu).forEach(function(el) {
     el.style.display = (isZip && S.enabledUnzip) ? 'flex' : 'none';
   });
-  // ctx-dir-zip: compress to zip (directories OR any single file)
+  // ctx-dir-zip: compress to zip (directories OR non-zip files; NOT .zip files themselves)
   qsa('.ctx-dir-zip', menu).forEach(function(el) {
-    el.style.display = (isDir || isFile) ? 'flex' : 'none';
+    el.style.display = (isDir || (isFile && !isZip)) ? 'flex' : 'none';
   });
   // download item visibility (flag-controlled; already set by applyFeatureFlags but re-apply here)
   qsa('[data-action="download"]', menu).forEach(function(el) {
@@ -1384,14 +1384,16 @@ function bindUpload() {
     fileInput.click();
   });
 
-  // File selection — listen to both 'change' and 'input' for iOS compatibility
+  // File selection — guard against double-fire on iOS (both 'change' and 'input' may fire)
+  var _selectionHandled = false;
   function onFilesSelected() {
+    if (_selectionHandled) return;
     var files = Array.prototype.slice.call(fileInput.files || []);
     if (!files.length) return;
+    _selectionHandled = true;
     addUploadFiles(files);
-    // Reset so the same file can be re-picked on iOS
-    // (don't reset immediately — keep files reference alive until addUploadFiles)
-    setTimeout(function() { fileInput.value = ''; }, 100);
+    // Reset flag and input after a tick so same file can be re-picked
+    setTimeout(function() { _selectionHandled = false; fileInput.value = ''; }, 200);
   }
   fileInput.addEventListener('change', onFilesSelected);
   fileInput.addEventListener('input',  onFilesSelected); // iOS fallback

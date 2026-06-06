@@ -324,6 +324,9 @@ function findBestRule(targetPath) {
 
 /** Check access for a file or directory. */
 function checkAccess(targetPath) {
+  if (isSelfPath(targetPath)) {
+    return { allowed: false, reason: 'app self-protection' };
+  }
   return findBestRule(targetPath);
 }
 
@@ -338,6 +341,9 @@ function checkAccess(targetPath) {
  * rule whose base is equal to or deeper than this directory.
  */
 function checkDirAccess(dirPath) {
+  if (isSelfPath(dirPath)) {
+    return { allowed: false, reason: 'app self-protection' };
+  }
   if (!USE_ACCESS_CONTROL) return { allowed: true, reason: 'no access control' };
 
   const result = findBestRule(dirPath);
@@ -366,6 +372,7 @@ let MAX_UPLOAD_BYTES    = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024;  // default 20 MB
 
 // ── Initialize conf ───────────────────────────────────────────
 if (_confArg) {
+  // ── conf.json provided ─────────────────────────────────────────────────
   console.log(`\n[conf] Loading: ${path.resolve(_confArg)}`);
   const confResult = loadConf(_confArg);
   CONF_PORT        = confResult.port;
@@ -385,6 +392,27 @@ if (_confArg) {
   console.log(`[conf] enabledUnzip    : ${ENABLED_UNZIP}`);
   console.log(`[conf] maxUploadMB     : ${confResult.maxUploadMB} MB`);
   console.log('');
+} else {
+  // ── No conf.json: apply secure defaults ────────────────────────────────
+  // 1. Restrict access to CWD (working directory) only
+  // 2. Disable download and unzip
+  const cwd = process.cwd();
+  USE_ACCESS_CONTROL = true;
+  ENABLED_DOWNLOAD   = false;
+  ENABLED_UNZIP      = false;
+  ACCESS_RULES = [
+    {
+      type:       'allow',
+      pattern:    cwd + path.sep + '*',
+      base:       cwd,
+      rawPattern: cwd + '/*  [auto: CWD]',
+    },
+  ];
+  console.log(`\n[conf] No conf.json — secure defaults applied:`);
+  console.log(`[conf]   access       : CWD only (${cwd})`);
+  console.log(`[conf]   download     : disabled`);
+  console.log(`[conf]   unzip        : disabled`);
+  console.log('');
 }
 
 // ── Port resolution (priority: CLI arg > PORT env > conf.json > 3000) ─
@@ -392,6 +420,20 @@ const PORT = parseInt(_portArg || process.env.PORT || CONF_PORT || 3000, 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const PUBLIC   = path.join(__dirname, 'public');
 const APP_NAME = 'mini-local-file-manager';
+
+// ── Self-protection: the directory containing server.js is always hidden ──
+// No path at or under SELF_DIR can be accessed, regardless of conf rules.
+const SELF_DIR = path.resolve(__dirname);
+
+/**
+ * Returns true if the given path is the app directory itself or any path under it.
+ * These paths are always forbidden, regardless of access rules.
+ */
+function isSelfPath(targetPath) {
+  const resolved = path.resolve(targetPath).replace(/\\/g, '/');
+  const selfDir  = SELF_DIR.replace(/\\/g, '/');
+  return resolved === selfDir || resolved.startsWith(selfDir + '/');
+}
 
 // Auth config
 const AUTH_USER  = process.env.FM_USER || '';
@@ -706,6 +748,7 @@ async function handleAPI(req, res, pathname, query) {
     if (!p || typeof p !== 'string') return sendJSON(res, 200, { valid: false, error: 'path required' });
     try {
       const resolved = path.resolve(p);
+      if (isSelfPath(resolved)) return sendJSON(res, 200, { valid: false, error: 'Access denied by policy' });
       const ac = checkDirAccess(resolved);
       if (!ac.allowed) return sendJSON(res, 200, { valid: false, error: 'Access denied by policy' });
       await fsp.access(resolved, fs.constants.R_OK);
@@ -1047,6 +1090,7 @@ async function handleAPI(req, res, pathname, query) {
       useAuth: USE_AUTH, useAccessControl: USE_ACCESS_CONTROL,
       enabledDownload: ENABLED_DOWNLOAD, enabledUnzip: ENABLED_UNZIP,
       maxUploadMB: MAX_UPLOAD_BYTES / (1024 * 1024),
+      hasConf: !!_confArg,
     });
     return;
   }
@@ -1260,11 +1304,10 @@ server.listen(PORT, HOST, () => {
   ips.forEach(ip => console.log(`│  Network : http://${ip}:${PORT}             │`));
   if (USE_AUTH)           console.log(`│  Auth    : enabled (user: ${AUTH_USER})               │`);
   if (USE_ACCESS_CONTROL) console.log(`│  Access  : ${ACCESS_RULES.length} rule(s) active, default DENY      │`);
-  if (_confArg) {
-    console.log(`│  Download: ${ENABLED_DOWNLOAD ? 'enabled ' : 'disabled'}                                  │`);
-    console.log(`│  Unzip   : ${ENABLED_UNZIP    ? 'enabled ' : 'disabled'}                                  │`);
-    console.log(`│  Upload  : max ${(MAX_UPLOAD_BYTES/1024/1024).toFixed(0)} MB                                        │`);
-  }
+  console.log(`│  Download: ${ENABLED_DOWNLOAD ? 'enabled ' : 'disabled'}                                  │`);
+  console.log(`│  Unzip   : ${ENABLED_UNZIP    ? 'enabled ' : 'disabled'}                                  │`);
+  console.log(`│  Upload  : max ${(MAX_UPLOAD_BYTES/1024/1024).toFixed(0)} MB                                        │`);
+  console.log(`│  AppDir  : ${SELF_DIR.slice(0,34).padEnd(34)} │`);
   console.log('│  Ctrl+C  : stop                                  │');
   console.log('└──────────────────────────────────────────────────┘\n');
   startMDNS();

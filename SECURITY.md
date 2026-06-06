@@ -240,3 +240,41 @@ FM_USER=admin FM_PASS_HASH=$(echo -n "yourpassword" | sha256sum | cut -d' ' -f1)
 
 **Mitigation:** Paths passed to zip/unzip are access-control-checked before the command is invoked.
 
+
+---
+
+## No-conf Secure Defaults
+
+When started **without** `conf.json`, the server applies secure defaults automatically:
+
+| Setting | No conf.json | With conf.json |
+|---------|-------------|----------------|
+| Access control | CWD only | Defined by `access` array |
+| `enabledDownload` | `false` | Per `enabledDownload` key (default `false`) |
+| `enabledUnzip` | `false` | Per `enabledUnzip` key (default `false`) |
+
+```bash
+# No conf — only current working directory accessible, download/unzip disabled
+node server.js
+
+# With conf — full control
+node server.js -conf=./conf.json
+```
+
+---
+
+## App Self-Protection
+
+The directory containing `server.js` (`__dirname`) is **always inaccessible**, regardless of:
+- conf.json access rules (even `allow /*` cannot override this)
+- URL parameters
+- Direct API calls
+
+This prevents the app's own source code, configuration, and private keys from being read, modified, or deleted via the file manager UI.
+
+The protection applies to:
+- `/api/tree` — app dir never listed
+- `/api/file` — app files never readable
+- `/api/validate` — app dir always returns `valid: false`
+- `/api/upload`, `/api/zip`, `/api/unzip`, etc. — all blocked for app dir
+

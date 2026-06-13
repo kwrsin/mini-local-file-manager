@@ -229,6 +229,10 @@ function openRoot(rootPath) {
       pushRecent(rootPath);
       syncURL(rootPath);
       $('toolbar-root-label').textContent = rootPath;
+      // Update browser tab title
+      var folderName = rootPath.split('/').pop() || rootPath.split('\\').pop() || rootPath;
+      if (!folderName) folderName = rootPath;
+      document.title = folderName + ' - Mini Local File Manager';
       renderTree(res.tree, $('file-tree'));
       updateStatus(rootPath);
       statusMsg(t('msgOpened'));
@@ -519,9 +523,6 @@ function saveFile() {
     S.fileCache[S.activeFile.path] = content;
     saveCache();
     statusMsg(t('msgSavedLocal'));
-  }).then(function() {
-    S.isEditing = false;
-    applyEditMode();
   });
 }
 

@@ -10,10 +10,7 @@
     "install-service-win": "node scripts/service.js install win",
     "uninstall-service": "node scripts/service.js uninstall"
   },
-  "dependencies": {
-    "chokidar": "^3.6.0",
-    "ws": "^8.21.0"
-  },
+  "dependencies": {},
   "optionalDependencies": {
     "mdns": "^2.7.2"
   },

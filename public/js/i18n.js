@@ -8,7 +8,7 @@
 var I18N = {
   ja: {
     tabFolder:'フォルダ階層', tabEditor:'マークダウン編集',
-    open:'開く', newFile:'新規ファイル', newFolder:'新規フォルダ', search:'検索',
+    open:'開く', newFile:'新規Markdown', newFolder:'新規フォルダ', search:'検索',
     noFolder:'フォルダが開かれていません',
     noFolderTitle:'フォルダが開かれていません',
     noFolderHint:'「開く」または Ctrl+O でフォルダを選択',
@@ -19,7 +19,7 @@ var I18N = {
     noFileHint:'フォルダ階層からファイルを選択',
     readonly:'読取専用',
     ctxOpen:'開く', ctxEdit:'テキスト編集', ctxSetRoot:'ここをルートに設定',
-    ctxNewFile:'新規ファイル', ctxNewFolder:'新規フォルダ',
+    ctxNewFile:'新規Markdown', ctxNewFolder:'新規フォルダ', ctxUpload:'アップロード',
     ctxCut:'切り取り', ctxCopy:'コピー', ctxPaste:'貼り付け',
     ctxRename:'名前変更', ctxDelete:'削除',
     openFolder2:'フォルダを開く', pathLabel:'パスを入力',
@@ -67,7 +67,7 @@ var I18N = {
   },
   en: {
     tabFolder:'Folder Tree', tabEditor:'Markdown Editor',
-    open:'Open', newFile:'New File', newFolder:'New Folder', search:'Search',
+    open:'Open', newFile:'New Markdown', newFolder:'New Folder', search:'Search',
     noFolder:'No folder opened',
     noFolderTitle:'No folder opened',
     noFolderHint:'Click "Open" or press Ctrl+O to select a folder',
@@ -78,7 +78,7 @@ var I18N = {
     noFileHint:'Select a file from the folder tree',
     readonly:'Read-only',
     ctxOpen:'Open', ctxEdit:'Edit Text', ctxSetRoot:'Set as Root',
-    ctxNewFile:'New File', ctxNewFolder:'New Folder',
+    ctxNewFile:'New Markdown', ctxNewFolder:'New Folder', ctxUpload:'Upload',
     ctxCut:'Cut', ctxCopy:'Copy', ctxPaste:'Paste',
     ctxRename:'Rename', ctxDelete:'Delete',
     openFolder2:'Open Folder', pathLabel:'Enter path',

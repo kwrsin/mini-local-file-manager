@@ -37,10 +37,6 @@ const url    = require('url');
 const crypto = require('crypto');
 
 // ── Optional deps ─────────────────────────────────────────────
-let WebSocketServer = null;
-try { WebSocketServer = require('ws').WebSocketServer; } catch(e) {}
-let chokidar = null;
-try { chokidar = require('chokidar'); } catch(e) {}
 let mdns = null;
 try { mdns = require('mdns'); } catch(e) {}
 
@@ -1247,40 +1243,6 @@ function unzipArchive(zipPath, destDir) {
   });
 }
 
-// ── WebSocket ─────────────────────────────────────────────────
-if (WebSocketServer) {
-  const wss      = new WebSocketServer({ server });
-  const watchers = new Map();
-  wss.on('connection', ws => {
-    ws.on('message', raw => {
-      try {
-        const msg = JSON.parse(raw);
-        if (msg.type === 'watch' && chokidar) {
-          if (!checkDirAccess(msg.path).allowed) return;
-          if (watchers.has(ws)) watchers.get(ws).close();
-          const w = chokidar.watch(msg.path, {
-            depth: 1, ignoreInitial: true,
-            ignored: /(^|[/\\])\..|(node_modules)/,
-          });
-          const notify = (ev, p) => {
-            if (ws.readyState === 1) ws.send(JSON.stringify({ type:'change', event:ev, path:p }));
-          };
-          w.on('add',p=>notify('add',p)).on('unlink',p=>notify('remove',p))
-           .on('addDir',p=>notify('addDir',p)).on('unlinkDir',p=>notify('removeDir',p))
-           .on('change',p=>notify('change',p));
-          watchers.set(ws, w);
-        }
-        if (msg.type === 'unwatch') {
-          if (watchers.has(ws)) { watchers.get(ws).close(); watchers.delete(ws); }
-        }
-      } catch(e) {}
-    });
-    ws.on('close', () => {
-      if (watchers.has(ws)) { watchers.get(ws).close(); watchers.delete(ws); }
-    });
-  });
-}
-
 // ── mDNS ─────────────────────────────────────────────────────
 function startMDNS() {
   if (!mdns) return;
@@ -1298,7 +1260,7 @@ server.listen(PORT, HOST, () => {
     l.forEach(i => { if (i.family === 'IPv4' && !i.internal) ips.push(i.address); }));
 
   console.log('┌──────────────────────────────────────────────────┐');
-  console.log('│       Mini Local File Manager  v2.5              │');
+  console.log('│       Mini Local File Manager  v2.6              │');
   console.log('├──────────────────────────────────────────────────┤');
   console.log(`│  Local   : http://localhost:${PORT}                  │`);
   ips.forEach(ip => console.log(`│  Network : http://${ip}:${PORT}             │`));

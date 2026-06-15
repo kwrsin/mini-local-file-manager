@@ -58,7 +58,7 @@ var S = {
   enabledDownload: true,
   enabledUnzip:    true,
   maxUploadMB:     20,
-  _treeDragActive: false
+  _treeDragActive:    false
 };
 
 /* ── API ─────────────────────────────────────────────────────── */
@@ -137,7 +137,6 @@ function bootApp() {
   bindUpload();
   bindLongPress();
   bindTreeDragMove();
-  connectWS();
   applyI18n();
   applyFeatureFlags(); // apply defaults immediately; will re-apply when api.info resolves
 
@@ -236,7 +235,6 @@ function openRoot(rootPath) {
       renderTree(res.tree, $('file-tree'));
       updateStatus(rootPath);
       statusMsg(t('msgOpened'));
-      watchRoot(rootPath);
     });
   }).catch(function(e) { statusMsg(t('msgConnErr') + ': ' + e.message); });
 }
@@ -314,31 +312,52 @@ function buildNodes(nodes, parent, depth) {
         if (wasOpen) toggle.className += ' open';
         wrapper.appendChild(cw);
 
+        // Open this directory (lazy-load children if needed)
+        function openDirNode() {
+          toggle.className = 'tree-toggle open';
+          cw.style.display = 'block';
+          S.openDirs[node.path] = true;
+          if (cw.childElementCount === 0) {
+            api.tree(node.path).then(function(res) {
+              if (!res.error) {
+                node.children = res.tree;
+                if (res.tree.length) buildNodes(res.tree, cw, depth + 1);
+                else cw.innerHTML = '<div class="empty-dir">(empty)</div>';
+              }
+            }).catch(function() {});
+          }
+        }
+
+        // If this directory was previously expanded (e.g. tree was
+        // re-rendered after a create/delete/rename), re-fetch its
+        // children so the expanded state is fully restored.
+        if (wasOpen) {
+          api.tree(node.path).then(function(res) {
+            if (!res.error) {
+              node.children = res.tree;
+              if (res.tree.length) buildNodes(res.tree, cw, depth + 1);
+              else cw.innerHTML = '<div class="empty-dir">(empty)</div>';
+            }
+          }).catch(function() {});
+        }
+        // Close this directory
+        function closeDirNode() {
+          toggle.className = 'tree-toggle';
+          cw.style.display = 'none';
+          delete S.openDirs[node.path];
+        }
+        // Expose for keyboard navigation (arrowNav)
+        item._openDir  = openDirNode;
+        item._closeDir = closeDirNode;
+        item._isOpen   = function() { return toggle.className.indexOf('open') >= 0; };
+
         item.addEventListener('click', function(e) {
           e.stopPropagation();
           selectItem(node, item);
           var nowOpen = toggle.className.indexOf('open') < 0;
-          if (nowOpen) {
-            toggle.className = 'tree-toggle open';
-            cw.style.display = 'block';
-            S.openDirs[node.path] = true;
-            if (cw.childElementCount === 0) {
-              api.tree(node.path).then(function(res) {
-                if (!res.error) {
-                  // Store children back into node for nodeByPath lookup
-                  node.children = res.tree;
-                  if (res.tree.length) buildNodes(res.tree, cw, depth + 1);
-                  else cw.innerHTML = '<div class="empty-dir">(empty)</div>';
-                }
-              }).catch(function() {});
-            }
-          } else {
-            toggle.className = 'tree-toggle';
-            cw.style.display = 'none';
-            delete S.openDirs[node.path];
-          }
+          if (nowOpen) openDirNode(); else closeDirNode();
           updateStatus(node.path);
-        setFileStats(null); // clear file stats for directories
+          setFileStats(null); // clear file stats for directories
         });
       } else {
         item.addEventListener('click', function(e) {
@@ -373,6 +392,8 @@ function selectItem(node, item) {
   for (var i = 0; i < prev.length; i++) prev[i].className = prev[i].className.replace(' selected','').replace('selected ','').replace('selected','');
   item.className += ' selected';
   S.selected = node;
+  // Hide context menu if it's open and the focused item changed
+  hideCtx();
 }
 
 /* Highlight an item in the tree by path (after tree is rendered) */
@@ -782,9 +803,10 @@ function showCtxMenu(e, node) {
   qsa('.ctx-zip-only', menu).forEach(function(el) {
     el.style.display = (isZip && S.enabledUnzip) ? 'flex' : 'none';
   });
-  // ctx-dir-zip: compress to zip (directories OR non-zip files; NOT .zip files themselves)
+  // ctx-dir-zip: compress to zip — hidden for individual file/folder selection
+  // (zip-compress is no longer offered from the context menu)
   qsa('.ctx-dir-zip', menu).forEach(function(el) {
-    el.style.display = (isDir || (isFile && !isZip)) ? 'flex' : 'none';
+    el.style.display = 'none';
   });
   // download item visibility (flag-controlled; already set by applyFeatureFlags but re-apply here)
   qsa('[data-action="download"]', menu).forEach(function(el) {
@@ -911,6 +933,12 @@ function confirmDelete() {
 /* ═══════════════════════════════════════════════════════════════
    NEW FILE / FOLDER
 ═══════════════════════════════════════════════════════════════ */
+/**
+ * "New File" always creates a Markdown (.md) file.
+ * On small screens, force a .md extension regardless of what the user types
+ * (since there is no separate type picker on mobile).
+ * After creation, immediately open the new file in the Markdown editor.
+ */
 function promptNew(type) {
   var ctx = S.newItemContext || S.selected;
   S.newItemContext = null;
@@ -923,6 +951,18 @@ function promptNew(type) {
   function doCreate() {
     var name = input.value.trim();
     if (!name) return;
+
+    if (type === 'file') {
+      // Always ensure a .md extension for new files.
+      // On small screens (no extension picker) this is enforced strictly;
+      // on desktop, respect an explicit different extension only if the
+      // user typed one — but per spec, new files are Markdown files.
+      if (!/\.md$/i.test(name)) {
+        // Strip any existing extension before appending .md
+        name = name.replace(/\.[^./\\]+$/, '') + '.md';
+      }
+    }
+
     var parentDir = S.root;
     if (ctx) parentDir = ctx.kind === 'directory' ? ctx.path : parentPath(ctx.path);
     var newPath = parentDir + S.sep + name;
@@ -934,7 +974,18 @@ function promptNew(type) {
       // Keep parent directory open
       S.openDirs[parentDir] = true;
       return openRoot(S.root).then(function() {
-        setTimeout(function() { highlightInTree(newPath); }, 200);
+        setTimeout(function() {
+          highlightInTree(newPath);
+          if (type === 'file') {
+            // Open the newly created Markdown file in the editor immediately
+            var newNode = { path: newPath, name: name, kind: 'file', isText: true, writable: true };
+            S.selected = newNode;
+            openTextFile(newNode).then(function() {
+              S.isEditing = true;
+              applyEditMode();
+            });
+          }
+        }, 200);
       });
     }).catch(function(e) { statusMsg(t('msgError') + ': ' + e.message); });
   }
@@ -1012,28 +1063,83 @@ function renderSearchResults(results) {
       el.addEventListener('click', function() {
         closeModal('modal-search');
         switchTab('folder');
-        // Open all ancestor directories
-        var pts = item.path.split(S.sep);
-        for (var i = 1; i < pts.length - 1; i++) {
-          S.openDirs[pts.slice(0, i + 1).join(S.sep)] = true;
-        }
-        // For directories, open it too
-        if (item.kind === 'directory') {
-          S.openDirs[item.path] = true;
-        }
-        // Re-render tree, then highlight
-        openRoot(S.root).then(function() {
-          setTimeout(function() {
-            var found = highlightInTree(item.path);
-            if (found) {
-              S.selected = item;
-              updateStatus(item.path, item.kind === 'directory' ? '' : item.name);
-            }
-          }, 250);
-        });
+        expandPathAndHighlight(item);
       });
       container.appendChild(el);
     })(results[ri]);
+  }
+}
+
+/**
+ * Expand the tree from the root down to the given search-result item,
+ * loading each intermediate directory level via the API (since the
+ * tree is lazily loaded and only the root level is initially rendered).
+ * After all ancestor directories are expanded, highlight & select the item.
+ */
+function expandPathAndHighlight(item) {
+  var root = S.root.replace(/[/\\]+$/, '');
+  var full = item.path;
+  // Relative path segments from root to the item (exclusive of root)
+  var rel = full.slice(root.length).replace(/^[/\\]/, '');
+  var segments = rel ? rel.split(S.sep) : [];
+
+  // If the item is at the root level itself, just highlight directly
+  if (segments.length <= 1) {
+    finishExpand();
+    return;
+  }
+
+  // Directories to expand: root, root/seg1, root/seg1/seg2, ... (excluding the final item itself
+  // unless the item itself is a directory, in which case include it too)
+  var dirsToExpand = [];
+  var acc = root;
+  var lastIdx = (item.kind === 'directory') ? segments.length : segments.length - 1;
+  for (var i = 0; i < lastIdx; i++) {
+    acc = acc + S.sep + segments[i];
+    dirsToExpand.push(acc);
+  }
+
+  // Mark all as open in state up-front (renderTree preserves this)
+  for (var k = 0; k < dirsToExpand.length; k++) S.openDirs[dirsToExpand[k]] = true;
+
+  // Sequentially expand each directory level in the DOM
+  function expandLevel(idx) {
+    if (idx >= dirsToExpand.length) { finishExpand(); return; }
+    var dirPath = dirsToExpand[idx];
+    var dirItem = $('file-tree').querySelector('.tree-item[data-path="' + dirPath.replace(/"/g, '\\"') + '"]');
+    if (!dirItem) {
+      // Not yet in DOM (parent not expanded) — try again shortly
+      setTimeout(function() { expandLevel(idx); }, 80);
+      return;
+    }
+    var isOpen = dirItem._isOpen && dirItem._isOpen();
+    if (isOpen) {
+      setTimeout(function() { expandLevel(idx + 1); }, 30);
+    } else if (dirItem._openDir) {
+      dirItem._openDir();
+      // Wait for lazy-load to populate children before continuing
+      setTimeout(function() { expandLevel(idx + 1); }, 250);
+    } else {
+      expandLevel(idx + 1);
+    }
+  }
+
+  expandLevel(0);
+
+  function finishExpand() {
+    setTimeout(function() {
+      var found = highlightInTree(item.path);
+      if (found) {
+        S.selected = item;
+        if (item.kind === 'directory') {
+          updateStatus(item.path);
+          setFileStats(null);
+        } else {
+          updateStatus(item.path, item.name);
+          setFileStats(item);
+        }
+      }
+    }, 200);
   }
 }
 
@@ -1075,30 +1181,6 @@ function bindDragDrop() {
         return openRoot(S.root);
       }).catch(function() {});
   });
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   WEBSOCKET
-═══════════════════════════════════════════════════════════════ */
-function connectWS() {
-  try {
-    S.ws = new WebSocket('ws://' + location.host);
-    S.ws.addEventListener('message', function(e) {
-      try {
-        var msg = JSON.parse(e.data);
-        if (msg.type === 'change' && S.root) {
-          clearTimeout(S._wsTimer);
-          S._wsTimer = setTimeout(function() { openRoot(S.root); }, 500);
-        }
-      } catch(ex) {}
-    });
-    S.ws.addEventListener('error', function() {});
-  } catch(e) {}
-}
-function watchRoot(p) {
-  if (S.ws && S.ws.readyState === 1) {
-    S.ws.send(JSON.stringify({ type: 'watch', path: p }));
-  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1214,26 +1296,81 @@ function bindShortcuts() {
   });
 }
 
+/**
+ * Tree keyboard navigation.
+ *  - ArrowUp / ArrowDown : move focus only (no expand/collapse, no recursion)
+ *  - ArrowRight : if a directory, open it (no move); if open already, move into first child
+ *  - ArrowLeft  : if a directory and open, close it (no move); otherwise move to parent
+ */
 function arrowNav(e) {
   var keys = ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
   if (keys.indexOf(e.key) < 0) return;
   e.preventDefault();
+
+  function focusItem(item) {
+    if (!item) return;
+    var node = nodeByPath(item.dataset.path) || {
+      path: item.dataset.path,
+      kind: item.dataset.kind,
+      name: item.dataset.path.split(S.sep).pop(),
+    };
+    selectItem(node, item);
+    if (item.dataset.kind === 'file') {
+      updateStatus(node.path, node.name);
+      setFileStats(node);
+    } else {
+      updateStatus(node.path);
+      setFileStats(null);
+    }
+    item.scrollIntoView({ block: 'nearest' });
+  }
+
   var items = qsa('.tree-item', $('file-tree'));
   if (!items.length) return;
   var cur = $('file-tree').querySelector('.tree-item.selected');
   var idx = cur ? items.indexOf(cur) : -1;
-  if (e.key === 'ArrowDown')       idx = Math.min(idx + 1, items.length - 1);
-  else if (e.key === 'ArrowUp')    idx = Math.max(idx - 1, 0);
-  else if (e.key === 'ArrowRight' && cur) { cur.click(); return; }
-  else if (e.key === 'ArrowLeft'  && cur) {
+
+  // ── Up/Down: move focus only, never expand/collapse ──────────────────
+  if (e.key === 'ArrowDown') {
+    idx = Math.min(idx + 1, items.length - 1);
+    focusItem(items[idx]);
+    return;
+  }
+  if (e.key === 'ArrowUp') {
+    idx = Math.max(idx - 1, 0);
+    focusItem(items[idx]);
+    return;
+  }
+
+  if (!cur) return;
+
+  // ── Right: open directory (no move); if already open, move to first child ──
+  if (e.key === 'ArrowRight') {
+    if (cur.dataset.kind === 'directory') {
+      if (cur._isOpen && cur._isOpen()) {
+        // Already open — move focus into first child if present
+        var wrapper = cur.parentElement; // .tree-node
+        var cw = wrapper ? wrapper.querySelector(':scope > .tree-children') : null;
+        var firstChild = cw ? cw.querySelector(':scope > .tree-node > .tree-item') : null;
+        if (firstChild) focusItem(firstChild);
+      } else if (cur._openDir) {
+        cur._openDir();
+      }
+    }
+    return;
+  }
+
+  // ── Left: close directory (no move); otherwise move to parent ─────────
+  if (e.key === 'ArrowLeft') {
+    if (cur.dataset.kind === 'directory' && cur._isOpen && cur._isOpen() && cur._closeDir) {
+      cur._closeDir();
+      return;
+    }
     var parentCW   = cur.closest ? cur.closest('.tree-children') : null;
     var parentNode = parentCW ? (parentCW.closest ? parentCW.closest('.tree-node') : null) : null;
-    var parentItem = parentNode ? parentNode.querySelector('.tree-item') : null;
-    if (parentItem) { parentItem.click(); return; }
-  }
-  if (idx >= 0) {
-    items[idx].click();
-    items[idx].scrollIntoView({ block: 'nearest' });
+    var parentItem = parentNode ? parentNode.querySelector(':scope > .tree-item') : null;
+    if (parentItem) focusItem(parentItem);
+    return;
   }
 }
 
@@ -1359,11 +1496,7 @@ function bindUpload() {
   var dropZone  = $('upload-drop-zone');
   var fileInput = $('upload-file-input');
   var goBtn     = $('btn-upload-go');
-  var toolbar   = $('btn-upload');
   var selectBtn = $('btn-select-files');
-
-  // Toolbar upload button
-  if (toolbar) toolbar.addEventListener('click', openUpload);
 
   // "Select Files" button inside modal — explicit click on input (iOS-safe)
   if (selectBtn) {

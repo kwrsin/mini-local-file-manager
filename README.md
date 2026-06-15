@@ -23,7 +23,28 @@ Browse, edit, create, rename and delete files on your local PC via any browser.
 ---
 
 
-## New in v2.5
+
+## New in v2.6
+
+### Removed
+- **Live Preview (WebSocket)** — removed due to connection reliability issues on LAN/mDNS hosts. Markdown preview now requires a manual reload/reopen to reflect external changes. The `ws` and `chokidar` dependencies are no longer required.
+
+### Changed
+- **New File → New Markdown**: "New File" now always creates a `.md` file. If you type a name without `.md` (or with a different extension), `.md` is appended automatically. After creation, the file opens immediately in the Markdown editor.
+- **Upload moved to context menu**: the toolbar Upload button was removed. Right-click (or long-press) any folder/file and choose **Upload** (Ctrl+U still works). Upload destination follows the same rule as before — selected folder, or its parent if a file is selected, or root if nothing is selected.
+- **Zip-compress hidden from context menu**: compressing a single file/folder to `.zip` is no longer offered. **Unzip** is still available when a `.zip` file is selected (subject to `enabledUnzip`).
+- **Search results** now expand the full folder path level-by-level (fetching each intermediate directory) before highlighting the target — works correctly for deeply nested results, not just first-level items.
+- **Tree expansion is preserved** after create / delete / rename / paste — previously expanded folders are automatically re-fetched and re-rendered after the tree refreshes.
+
+### Keyboard / Mouse
+- **Context menu auto-closes** when the focused file/folder changes (arrow keys, click, etc.)
+- **Arrow key navigation rewritten**:
+  - `↑` / `↓` — move focus only (never expands/collapses, never recurses)
+  - `→` — open a directory (focus stays); if already open, move into its first child
+  - `←` — close an open directory (focus stays); otherwise move to the parent
+
+---
+## New in v2.6
 
 ### conf.json — Full Reference
 

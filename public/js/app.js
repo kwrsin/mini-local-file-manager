@@ -140,14 +140,55 @@ function bootApp() {
   applyI18n();
   applyFeatureFlags(); // apply defaults immediately; will re-apply when api.info resolves
 
-  var params  = new URLSearchParams(location.search);
-  var urlRoot = params.get('root');
+  var params   = new URLSearchParams(location.search);
+  var urlRoot  = params.get('root');
+  var urlFile  = params.get('file');
+
   if (urlRoot) {
-    openRoot(urlRoot);
+    openRoot(urlRoot).then(function() {
+      if (urlFile) openFileFromURL(urlFile);
+    });
+  } else if (urlFile) {
+    // No root given, but a file path was provided — derive root from
+    // the file's parent directory and then open the file.
+    var sepGuess = urlFile.indexOf('\\') >= 0 ? '\\' : '/';
+    var parts = urlFile.split(sepGuess);
+    parts.pop();
+    var derivedRoot = parts.join(sepGuess);
+    if (derivedRoot) {
+      openRoot(derivedRoot).then(function() { openFileFromURL(urlFile); });
+    }
   } else if (S.recentFolders.length) {
     // Try recent folders sequentially until a valid one is found
     tryRecentFolders(0);
   }
+}
+
+/**
+ * Open a file specified via the ?file= URL parameter.
+ * Determines the file type (text/image/pdf/media) from its extension
+ * and opens the appropriate viewer/editor.
+ */
+function openFileFromURL(filePath) {
+  if (!filePath || !S.root) return;
+  var name = filePath.split('/').pop().split('\\').pop();
+  if (isMedia(name)) {
+    var mediaNode = { path: filePath, name: name, kind: 'file', isText: false };
+    openMedia(mediaNode);
+    return;
+  }
+  if (isViewable(name) && !isText(name)) {
+    var viewNode = { path: filePath, name: name, kind: 'file', isText: false };
+    openViewer(viewNode);
+    return;
+  }
+  if (isText(name)) {
+    var textNode = { path: filePath, name: name, kind: 'file', isText: true, writable: true };
+    openTextFile(textNode);
+    return;
+  }
+  // Unknown/binary type — nothing to open; clear the stale param
+  syncURLFile(null, null);
 }
 
 function tryRecentFolders(idx) {
@@ -200,10 +241,36 @@ function pushRecent(p) {
   S.recentFolders = arr.slice(0, MAX_RECENT);
   saveRecent();
 }
-function syncURL(root) {
+function syncURL(root, filePath) {
   var u = new URL(location.href);
   if (root) u.searchParams.set('root', root);
   else u.searchParams.delete('root');
+  // Only touch 'file' if a value/null was explicitly passed (3rd arg given).
+  if (arguments.length > 1) {
+    if (filePath) u.searchParams.set('file', filePath);
+    else u.searchParams.delete('file');
+  }
+  // else: leave existing 'file' param untouched
+  history.replaceState({}, '', u.toString());
+}
+
+/** Update only the file param + document.title, keeping root unchanged. */
+function syncURLFile(filePath, fileName) {
+  var u = new URL(location.href);
+  if (filePath) {
+    u.searchParams.set('file', filePath);
+    document.title = fileName + ' - Mini Local File Manager';
+  } else {
+    u.searchParams.delete('file');
+    // Restore folder name in title
+    var root = u.searchParams.get('root');
+    if (root) {
+      var folderName = root.split('/').pop() || root.split('\\').pop() || root;
+      document.title = folderName + ' - Mini Local File Manager';
+    } else {
+      document.title = 'Mini Local File Manager';
+    }
+  }
   history.replaceState({}, '', u.toString());
 }
 
@@ -450,6 +517,14 @@ function openViewer(node) {
     }).catch(function() {});
   }
   openModal('modal-viewer');
+  syncURLFile(node.path, node.name);
+
+  // Clear file param + restore title when viewer closes
+  var bg = $('modal-viewer').querySelector('.modal-bg');
+  var xBtn = $('modal-viewer').querySelector('.modal-x');
+  function onClose() { syncURLFile(null, null); }
+  if (bg)   bg.addEventListener('click', onClose, { once: true });
+  if (xBtn) xBtn.addEventListener('click', onClose, { once: true });
 }
 
 function openTextFile(node) {
@@ -463,7 +538,8 @@ function openTextFile(node) {
     applyEditMode();
     updateStatus(node.path, node.name);
     switchTab('editor');
-    return;
+    syncURLFile(node.path, node.name);
+    return Promise.resolve();
   }
   return api.file(node.path).then(function(res) {
     if (res.error) { statusMsg(t('msgError') + ': ' + res.error); return; }
@@ -476,6 +552,7 @@ function openTextFile(node) {
     applyEditMode();
     updateStatus(node.path, node.name);
     switchTab('editor');
+    syncURLFile(node.path, node.name);
   }).catch(function(e) { statusMsg(t('msgConnErr') + ': ' + e.message); });
 }
 
@@ -487,11 +564,39 @@ function bindEditor() {
   $('btn-save').addEventListener('click', saveFile);
   $('btn-back-folder').addEventListener('click', function() {
     if (S.isEditing) {
-      saveFile().then(function() { switchTab('folder'); });
+      saveFile().then(function() { switchTab('folder'); syncURLFile(null, null); });
     } else {
       switchTab('folder');
+      syncURLFile(null, null);
     }
   });
+  $('btn-reload-file').addEventListener('click', reloadFile);
+}
+
+/**
+ * Reload the currently open file from disk.
+ * In edit mode: warn if unsaved, then reload.
+ * In preview mode: reload and re-render silently.
+ */
+function reloadFile() {
+  if (!S.activeFile) return;
+  var fp = S.activeFile.path;
+  // Warn if in edit mode and content has changed
+  if (S.isEditing && $('editor-textarea').value !== S.activeFile.content) {
+    if (!confirm(t('reloadConfirm') || 'Discard unsaved changes and reload?')) return;
+  }
+  api.file(fp).then(function(res) {
+    if (res.error) { statusMsg(t('msgError') + ': ' + res.error); return; }
+    S.activeFile.content = res.content;
+    delete S.fileCache[fp];
+    saveCache();
+    if (S.isEditing) {
+      $('editor-textarea').value = res.content;
+    } else {
+      renderPreview(res.content, S.activeFile.name, fp);
+    }
+    statusMsg(t('msgReloaded'));
+  }).catch(function(e) { statusMsg(t('msgConnErr') + ': ' + e.message); });
 }
 
 function toggleEdit() {
@@ -1278,8 +1383,8 @@ function bindShortcuts() {
     if (e.key === 'F9') {
       e.preventDefault();
       if (S.tab === 'editor') {
-        if (S.isEditing) { saveFile().then(function() { switchTab('folder'); }); }
-        else switchTab('folder');
+        if (S.isEditing) { saveFile().then(function() { switchTab('folder'); syncURLFile(null, null); }); }
+        else { switchTab('folder'); syncURLFile(null, null); }
       }
       return;
     }
@@ -1400,6 +1505,7 @@ function openMedia(node) {
   el.src = rawUrl;
   el.preload = 'metadata';
   body.appendChild(el);
+  syncURLFile(node.path, node.name);
 
   // Stop playback when modal closes
   var bg = $('modal-media').querySelector('.modal-bg');
@@ -1407,6 +1513,7 @@ function openMedia(node) {
   function stopAndClose() {
     el.pause();
     el.src = '';
+    syncURLFile(null, null);
     closeModal('modal-media');
   }
   if (bg)      bg.onclick      = stopAndClose;

@@ -860,9 +860,11 @@ async function handleAPI(req, res, pathname, query) {
       const body = JSON.parse(await readBody(req));
       if (!checkAccess(body.from).allowed) return sendDenied(res);
       if (!checkAccess(body.to).allowed)   return sendDenied(res);
-      await copyRecursive(body.from, body.to);
-      auditLog('copied', body.from + ' -> ' + body.to, req);
-      sendJSON(res, 200, { ok: true });
+      // Resolve collision: if dest already exists, use a unique name
+      const safeDest = await uniqueDest(body.to);
+      await copyRecursive(body.from, safeDest);
+      auditLog('copied', body.from + ' -> ' + safeDest, req);
+      sendJSON(res, 200, { ok: true, dest: safeDest });
     } catch(e) { sendJSON(res, 500, { error: e.message }); }
     return;
   }
@@ -1135,6 +1137,19 @@ async function buildTree(dirPath) {
     return a.name.localeCompare(b.name);
   });
   return nodes;
+}
+
+// ── Find unique destination path (add _2, _3, ... suffix on conflict) ─────
+async function uniqueDest(destPath) {
+  try { await fsp.access(destPath); } catch(e) { return destPath; } // doesn't exist → ok
+  // Conflict: insert numeric suffix before extension
+  const ext  = path.extname(destPath);
+  const base = destPath.slice(0, destPath.length - ext.length);
+  for (let n = 2; n < 1000; n++) {
+    const candidate = base + '_' + n + ext;
+    try { await fsp.access(candidate); } catch(e) { return candidate; }
+  }
+  return destPath; // fallback
 }
 
 // ── Recursive copy ────────────────────────────────────────────

@@ -335,8 +335,9 @@ function buildNodes(nodes, parent, depth) {
       var item = document.createElement('div');
       item.className    = 'tree-item';
       item.style.paddingLeft = (depth * 16 + 6) + 'px';
-      item.dataset.path = node.path;
-      item.dataset.kind = node.kind;
+      item.dataset.path   = node.path;
+      item.dataset.kind   = node.kind;
+      item.dataset.istext = node.isText ? 'true' : 'false';
       item.setAttribute('draggable', 'true');
 
       var toggle = document.createElement('span');
@@ -735,23 +736,35 @@ function inlineMD(text, baseDir) {
     codes.push(esc(c));
     return '\x00C' + (codes.length - 1) + '\x00';
   });
+  // ── Protect bare URLs from italic/bold conversion ────────────────────
+  // URLs containing underscores (e.g. query params like _ControlID=...)
+  // would be mangled by the _text_ italic rule. Stash them as placeholders.
+  var urlPlaceholders = [];
+  s = s.replace(/https?:\/\/[^\s<>\"'\)\]]+/g, function(url) {
+    urlPlaceholders.push(url);
+    return '\x00U' + (urlPlaceholders.length - 1) + '\x00';
+  });
   s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');
   s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
   s = s.replace(/_(.+?)_/g, '<em>$1</em>');
   s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+  // Restore URL placeholders before link processing
+  s = s.replace(/\x00U(\d+)\x00/g, function(_, i) { return urlPlaceholders[+i]; });
   // Images before links
   s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(_, alt, src) {
     return '<img src="' + esc(resolveImg(src, baseDir)) + '" alt="' + esc(alt) + '" class="md-img">';
   });
-  // Links — carefully avoid capturing trailing punctuation
+  // Links — href kept as-is (only strip < > " for injection prevention)
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function(_, label, href) {
-    return '<a href="' + esc(href) + '" target="_blank" rel="noopener">' + label + '</a>';
+    var safeHref = href.replace(/[<>"]/g, '');
+    return '<a href="' + safeHref + '" target="_blank" rel="noopener">' + esc(label) + '</a>';
   });
-  // Auto-links: bare http URLs not already inside an attribute
+  // Auto-links: bare http/https URLs → clickable links
   s = s.replace(/(^|[^"'=])(https?:\/\/[^\s<>"']+)/g, function(_, pre, url) {
-    return pre + '<a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a>';
+    var safeUrl = url.replace(/[<>"]/g, '');
+    return pre + '<a href="' + safeUrl + '" target="_blank" rel="noopener">' + esc(url) + '</a>';
   });
   s = s.replace(/\[ \] /g, '<input type="checkbox" disabled> ');
   s = s.replace(/\[x\] /gi, '<input type="checkbox" checked disabled> ');
@@ -1397,6 +1410,15 @@ function bindShortcuts() {
       }
       return;
     }
+    // Shift+Enter (or Shift key alone on folder tab): open the selected file
+    if (!inInput && e.key === 'Enter' && e.shiftKey && S.tab === 'folder' && S.selected) {
+      e.preventDefault();
+      if (S.selected.kind === 'file') {
+        openFileNode(S.selected);
+      }
+      return;
+    }
+
     if (!inInput && S.tab === 'folder') arrowNav(e);
   });
 }
@@ -1414,13 +1436,16 @@ function arrowNav(e) {
 
   function focusItem(item) {
     if (!item) return;
-    var node = nodeByPath(item.dataset.path) || {
-      path: item.dataset.path,
-      kind: item.dataset.kind,
-      name: item.dataset.path.split(S.sep).pop(),
+    var found = nodeByPath(item.dataset.path);
+    var node = found || {
+      path:    item.dataset.path,
+      kind:    item.dataset.kind || 'file',
+      name:    item.dataset.path ? item.dataset.path.split(S.sep).pop() : '',
+      isText:  item.dataset.istext === 'true',
+      writable:true,
     };
     selectItem(node, item);
-    if (item.dataset.kind === 'file') {
+    if (node.kind === 'file') {
       updateStatus(node.path, node.name);
       setFileStats(node);
     } else {
@@ -1430,8 +1455,25 @@ function arrowNav(e) {
     item.scrollIntoView({ block: 'nearest' });
   }
 
-  var items = qsa('.tree-item', $('file-tree'));
+  // ── Only include VISIBLE items (collapsed children are display:none) ──
+  var allItems = qsa('.tree-item', $('file-tree'));
+  var items = [];
+  for (var vi = 0; vi < allItems.length; vi++) {
+    // Check if any ancestor .tree-children is hidden
+    var el = allItems[vi];
+    var hidden = false;
+    var p = el.parentElement;
+    while (p && p !== $('file-tree')) {
+      if (p.classList.contains('tree-children') && p.style.display === 'none') {
+        hidden = true;
+        break;
+      }
+      p = p.parentElement;
+    }
+    if (!hidden) items.push(el);
+  }
   if (!items.length) return;
+
   var cur = $('file-tree').querySelector('.tree-item.selected');
   var idx = cur ? items.indexOf(cur) : -1;
 

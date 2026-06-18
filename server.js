@@ -137,6 +137,7 @@ function loadConf(confPath) {
       enabledDownload: parseConfBool(conf, 'enabledDownload'),
       enabledUnzip:    parseConfBool(conf, 'enabledUnzip'),
       maxUploadMB:     parseConfFilesize(conf),
+      ipAddr:          parseConfIPAddr(conf),
     };
   }
 
@@ -201,6 +202,7 @@ function loadConf(confPath) {
     enabledDownload: parseConfBool(conf, 'enabledDownload'),
     enabledUnzip:    parseConfBool(conf, 'enabledUnzip'),
     maxUploadMB:     parseConfFilesize(conf),
+    ipAddr:          parseConfIPAddr(conf),
   };
 }
 
@@ -217,6 +219,26 @@ function parseConfPort(conf) {
 function parseConfBool(conf, key) {
   if (conf && typeof conf[key] === 'boolean') return conf[key];
   return false; // implicit default: false
+}
+
+/**
+ * Parse ip_addr from conf.
+ * Returns the IP string if valid (IPv4 dotted-decimal or '0.0.0.0'),
+ * or null if the key is absent (caller uses default).
+ * If the value is present but invalid, throws an error so startup is aborted.
+ */
+function parseConfIPAddr(conf) {
+  if (!conf || conf.ip_addr === undefined || conf.ip_addr === null) return null;
+  const v = String(conf.ip_addr).trim();
+  // Validate: must be a valid IPv4 address (0-255 each octet)
+  const parts = v.split('.');
+  if (parts.length !== 4) throw new Error(`Invalid ip_addr in conf: "${v}" (must be IPv4 dotted-decimal)`);
+  for (const p of parts) {
+    const n = Number(p);
+    if (!Number.isInteger(n) || n < 0 || n > 255 || p === '')
+      throw new Error(`Invalid ip_addr in conf: "${v}" (octet "${p}" is out of range 0-255)`);
+  }
+  return v;
 }
 
 const DEFAULT_MAX_UPLOAD_MB = 20;
@@ -362,6 +384,7 @@ function checkDirAccess(dirPath) {
 let USE_ACCESS_CONTROL  = false;
 let ACCESS_RULES        = [];  // [{ type, pattern, base, rawPattern }]
 let CONF_PORT           = null;
+let CONF_HOST           = null;   // null = use default (localhost/127.0.0.1)
 let ENABLED_DOWNLOAD    = true;  // true when no conf; false when conf present but key absent
 let ENABLED_UNZIP       = true;  // same
 let MAX_UPLOAD_BYTES    = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024;  // default 20 MB
@@ -370,8 +393,16 @@ let MAX_UPLOAD_BYTES    = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024;  // default 20 MB
 if (_confArg) {
   // ── conf.json provided ─────────────────────────────────────────────────
   console.log(`\n[conf] Loading: ${path.resolve(_confArg)}`);
-  const confResult = loadConf(_confArg);
+  let confResult;
+  try {
+    confResult = loadConf(_confArg);
+  } catch(e) {
+    console.error(`\n⚠  conf.json error: ${e.message}`);
+    console.error(`   Fix the value in: ${path.resolve(_confArg)}`);
+    process.exit(1);
+  }
   CONF_PORT        = confResult.port;
+  CONF_HOST        = confResult.ipAddr;  // null if absent → default to localhost
   ENABLED_DOWNLOAD  = confResult.enabledDownload;
   ENABLED_UNZIP     = confResult.enabledUnzip;
   MAX_UPLOAD_BYTES  = confResult.maxUploadMB * 1024 * 1024;
@@ -384,6 +415,7 @@ if (_confArg) {
     console.log(`[conf] ${ACCESS_RULES.length} rule(s) loaded. Default: DENY`);
   }
   if (CONF_PORT)       console.log(`[conf] port            : ${CONF_PORT}`);
+  if (CONF_HOST) console.log(`[conf] ip_addr         : ${CONF_HOST}`);
   console.log(`[conf] enabledDownload : ${ENABLED_DOWNLOAD}`);
   console.log(`[conf] enabledUnzip    : ${ENABLED_UNZIP}`);
   console.log(`[conf] maxUploadMB     : ${confResult.maxUploadMB} MB`);
@@ -413,7 +445,9 @@ if (_confArg) {
 
 // ── Port resolution (priority: CLI arg > PORT env > conf.json > 3000) ─
 const PORT = parseInt(_portArg || process.env.PORT || CONF_PORT || 3000, 10);
-const HOST = process.env.HOST || '0.0.0.0';
+// Host resolution priority: conf ip_addr > HOST env > default (127.0.0.1)
+// Default is localhost (127.0.0.1) for security — not 0.0.0.0
+const HOST = CONF_HOST || process.env.HOST || '127.0.0.1';
 const PUBLIC   = path.join(__dirname, 'public');
 const APP_NAME = 'mini-local-file-manager';
 
@@ -1277,8 +1311,15 @@ server.listen(PORT, HOST, () => {
   console.log('┌──────────────────────────────────────────────────┐');
   console.log('│       Mini Local File Manager  v2.6              │');
   console.log('├──────────────────────────────────────────────────┤');
-  console.log(`│  Local   : http://localhost:${PORT}                  │`);
-  ips.forEach(ip => console.log(`│  Network : http://${ip}:${PORT}             │`));
+  // Show the actual listening address
+  if (HOST === '0.0.0.0') {
+    // Listening on all interfaces — show local + all network IPs
+    console.log(`│  Local   : http://127.0.0.1:${PORT}                  │`);
+    ips.forEach(ip => console.log(`│  Network : http://${ip}:${PORT}             │`));
+  } else {
+    // Listening on specific address only
+    console.log(`│  Listen  : http://${HOST}:${PORT}             │`);
+  }
   if (USE_AUTH)           console.log(`│  Auth    : enabled (user: ${AUTH_USER})               │`);
   if (USE_ACCESS_CONTROL) console.log(`│  Access  : ${ACCESS_RULES.length} rule(s) active, default DENY      │`);
   console.log(`│  Download: ${ENABLED_DOWNLOAD ? 'enabled ' : 'disabled'}                                  │`);
@@ -1293,6 +1334,8 @@ server.listen(PORT, HOST, () => {
 server.on('error', e => {
   if (e.code === 'EADDRINUSE')
     console.error(`\n⚠  Port ${PORT} in use. Try: node server.js ${PORT + 1}`);
+  else if (e.code === 'EADDRNOTAVAIL')
+    console.error(`\n⚠  Address ${HOST} is not available on this machine.\n   Check ip_addr in conf.json.`);
   else console.error('Server error:', e.message);
   process.exit(1);
 });

@@ -1,5 +1,6 @@
 {
   "port": 3000,
+  "ip_addr": "127.0.0.1",
   "enabledDownload": true,
   "enabledUnzip": true,
   "filesize": 20,

@@ -65,11 +65,15 @@ PORT=8080 node mini-local-file-manager/server.js
 
 # 5. With a conf.json (recommended for production use)
 node mini-local-file-manager/server.js -conf=/path/to/conf.json
+
+# 6. Override the listen address via CLI (takes priority over conf.json)
+node mini-local-file-manager/server.js -ip_addr=0.0.0.0
+node mini-local-file-manager/server.js -conf=/path/to/conf.json -ip_addr=192.168.1.50
 ```
 
 Open **http://127.0.0.1:3000** in your browser, then enter a folder path and click **Open**.
 
-> **Default listen address:** `127.0.0.1` (localhost only). Set `ip_addr` in `conf.json` to change (see below).
+> **Default listen address:** `127.0.0.1` (localhost only). Set `ip_addr` in `conf.json`, or pass `-ip_addr=ADDRESS` on the command line (see below).
 
 ---
 
@@ -118,13 +122,20 @@ Open **http://127.0.0.1:3000** in your browser, then enter a folder path and cli
 
 ### Listening address (`ip_addr`)
 
+**Priority:** `-ip_addr=` CLI argument **>** `conf.json` `ip_addr` **>** `HOST` env var **>** default (`127.0.0.1`)
+
+```bash
+# CLI argument (highest priority — overrides conf.json)
+node mini-local-file-manager/server.js -ip_addr=0.0.0.0
+```
+
 | `ip_addr` value | Effect |
 |---|---|
 | absent / no conf | `127.0.0.1` — localhost only (secure default) |
 | `"127.0.0.1"` | localhost only |
 | `"0.0.0.0"` | all network interfaces (LAN-accessible) |
 | `"192.168.x.x"` | specific NIC only |
-| invalid value | startup aborted with error message |
+| invalid value | startup aborted with error message (whether from conf.json or `-ip_addr=`) |
 
 ### Secure defaults (no conf.json)
 
@@ -385,6 +396,9 @@ node mini-local-file-manager/server.js 4000
 
 # conf.json 指定（推奨）
 node mini-local-file-manager/server.js -conf=/path/to/conf.json
+
+# 待受アドレスをCLIで指定（conf.jsonより優先）
+node mini-local-file-manager/server.js -ip_addr=0.0.0.0
 ```
 
 ブラウザで **http://127.0.0.1:3000** を開き、フォルダパスを入力して「開く」をクリック。

@@ -42,15 +42,18 @@ try { mdns = require('mdns'); } catch(e) {}
 
 // ══════════════════════════════════════════════════════════════
 //  ARGUMENT PARSING
-//  node server.js [port] [-conf=PATH]
+//  node server.js [port] [-conf=PATH] [-ip_addr=ADDRESS]
 // ══════════════════════════════════════════════════════════════
-const _args     = process.argv.slice(2);
-let   _portArg  = null;
-let   _confArg  = null;
+const _args      = process.argv.slice(2);
+let   _portArg   = null;
+let   _confArg   = null;
+let   _ipAddrArg = null;
 
 for (const arg of _args) {
   if (/^-conf=/.test(arg)) {
     _confArg = arg.slice('-conf='.length).trim();
+  } else if (/^-ip_addr=/.test(arg)) {
+    _ipAddrArg = arg.slice('-ip_addr='.length).trim();
   } else if (/^\d+$/.test(arg)) {
     _portArg = arg;
   }
@@ -227,18 +230,22 @@ function parseConfBool(conf, key) {
  * or null if the key is absent (caller uses default).
  * If the value is present but invalid, throws an error so startup is aborted.
  */
-function parseConfIPAddr(conf) {
-  if (!conf || conf.ip_addr === undefined || conf.ip_addr === null) return null;
-  const v = String(conf.ip_addr).trim();
+function validateIPAddr(v, sourceLabel) {
   // Validate: must be a valid IPv4 address (0-255 each octet)
   const parts = v.split('.');
-  if (parts.length !== 4) throw new Error(`Invalid ip_addr in conf: "${v}" (must be IPv4 dotted-decimal)`);
+  if (parts.length !== 4) throw new Error(`Invalid ip_addr ${sourceLabel}: "${v}" (must be IPv4 dotted-decimal)`);
   for (const p of parts) {
     const n = Number(p);
     if (!Number.isInteger(n) || n < 0 || n > 255 || p === '')
-      throw new Error(`Invalid ip_addr in conf: "${v}" (octet "${p}" is out of range 0-255)`);
+      throw new Error(`Invalid ip_addr ${sourceLabel}: "${v}" (octet "${p}" is out of range 0-255)`);
   }
   return v;
+}
+
+function parseConfIPAddr(conf) {
+  if (!conf || conf.ip_addr === undefined || conf.ip_addr === null) return null;
+  const v = String(conf.ip_addr).trim();
+  return validateIPAddr(v, 'in conf');
 }
 
 const DEFAULT_MAX_UPLOAD_MB = 20;
@@ -445,9 +452,20 @@ if (_confArg) {
 
 // ── Port resolution (priority: CLI arg > PORT env > conf.json > 3000) ─
 const PORT = parseInt(_portArg || process.env.PORT || CONF_PORT || 3000, 10);
-// Host resolution priority: conf ip_addr > HOST env > default (127.0.0.1)
+
+// ── Validate -ip_addr= CLI argument (if given) ─────────────────────────
+if (_ipAddrArg) {
+  try {
+    validateIPAddr(_ipAddrArg, 'in -ip_addr= argument');
+  } catch(e) {
+    console.error(`\n⚠  ${e.message}`);
+    process.exit(1);
+  }
+}
+
+// Host resolution priority: CLI -ip_addr= > conf ip_addr > HOST env > default (127.0.0.1)
 // Default is localhost (127.0.0.1) for security — not 0.0.0.0
-const HOST = CONF_HOST || process.env.HOST || '127.0.0.1';
+const HOST = _ipAddrArg || CONF_HOST || process.env.HOST || '127.0.0.1';
 const PUBLIC   = path.join(__dirname, 'public');
 const APP_NAME = 'mini-local-file-manager';
 
@@ -1311,6 +1329,7 @@ server.listen(PORT, HOST, () => {
   console.log('┌──────────────────────────────────────────────────┐');
   console.log('│       Mini Local File Manager  v2.6              │');
   console.log('├──────────────────────────────────────────────────┤');
+  if (_ipAddrArg) console.log(`│  (ip_addr from -ip_addr= CLI argument)            │`);
   // Show the actual listening address
   if (HOST === '0.0.0.0') {
     // Listening on all interfaces — show local + all network IPs

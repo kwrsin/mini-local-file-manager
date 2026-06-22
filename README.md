@@ -1,4 +1,4 @@
-# Mini Local File Manager - *Connect your notes.*
+# Mini Local File Manager - *Build your Markdown knowledge network.*
 
 **A lightweight browser-based local file manager built with Node.js.**  
 Browse, edit Markdown, create, rename, copy, move and delete files on your local machine via any browser — including mobile.

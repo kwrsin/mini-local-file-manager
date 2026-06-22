@@ -34,6 +34,7 @@ Browse, edit Markdown, create, rename, copy, move and delete files on your local
 - 🌍 Optional mDNS `.local` domain support
 - 💾 USB-portable — no global installs needed
 - 📦 No runtime dependencies in production (pure Node.js built-ins)
+- 🌐 Supports virtual private networks (VPNs) such as Tailscale.
 
 ---
 

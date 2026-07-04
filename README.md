@@ -266,22 +266,35 @@ Sessions expire after 8 hours. If `FM_USER` / `FM_PASS_HASH` are not set, authen
 ---
 
 ## Install as a System Service
+```bash
+node scripts/service.js install [linux|mac|win] [options]
 
+Options:
+  -conf=PATH         Path to conf.json (Absolute path recommended)
+  -ip_addr=ADDRESS   Listening IP address (e.g., 0.0.0.0, 127.0.0.1, 192.168.x.x)
+  -port=NUMBER       Port number (Default: 3000)
+```
+  
 ### Linux (systemd)
 ```bash
-sudo node scripts/service.js install linux
+sudo node scripts/service.js install linux \
+  -conf=/etc/filemanager/conf.json \
+  -ip_addr=0.0.0.0 \
+  -port=8080
 sudo node scripts/service.js uninstall  # remove
 ```
 
 ### macOS (LaunchAgent)
 ```bash
-node scripts/service.js install mac
+node scripts/service.js install mac \
+  -conf=/Users/alice/filemanager-conf.json
 node scripts/service.js uninstall       # remove
 ```
 
 ### Windows (Task Scheduler)
 ```cmd
-node scripts/service.js install win
+node scripts/service.js install win \
+  -conf=c:\\mini_local_file_manager_settings\\conf.json
 node scripts/service.js uninstall
 ```
 

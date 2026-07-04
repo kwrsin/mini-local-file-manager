@@ -267,7 +267,7 @@ Sessions expire after 8 hours. If `FM_USER` / `FM_PASS_HASH` are not set, authen
 
 ## Install as a System Service
 ```bash
-node scripts/service.js install [linux|mac|win] [options]
+node scripts/service.js [install|uninstall] [linux|mac|win] [options]
 
 Options:
   -conf=PATH         Path to conf.json (Absolute path recommended)

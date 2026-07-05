@@ -33,7 +33,6 @@ const fs     = require('fs');
 const fsp    = fs.promises;
 const path   = require('path');
 const os     = require('os');
-const url    = require('url');
 const crypto = require('crypto');
 
 // ── Optional deps ─────────────────────────────────────────────
@@ -567,8 +566,9 @@ function getClientIP(req) {
 //  HTTP SERVER
 // ══════════════════════════════════════════════════════════════
 const server = http.createServer(async (req, res) => {
-  const parsed   = url.parse(req.url, true);
-  const pathname = decodeURIComponent(parsed.pathname);
+  // WHATWG URL API (replaces deprecated url.parse)
+  const _u       = new URL(req.url, 'http://localhost');
+  const pathname = decodeURIComponent(_u.pathname);
 
   res.setHeader('Access-Control-Allow-Origin',  '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
@@ -584,7 +584,10 @@ const server = http.createServer(async (req, res) => {
   // All other API
   if (pathname.startsWith('/api/')) {
     if (USE_AUTH && !checkToken(req)) return sendJSON(res, 401, { error: 'Unauthorized' });
-    return handleAPI(req, res, pathname, parsed.query);
+    // Convert URLSearchParams to a plain object for handleAPI
+    const _q = {};
+    _u.searchParams.forEach((v, k) => { _q[k] = v; });
+    return handleAPI(req, res, pathname, _q);
   }
 
   // Static files

@@ -16,6 +16,21 @@ function esc(s) {
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+/**
+ * Sanitize a file path string.
+ * - Converts <em>text</em> back to _text_ (fixes paths corrupted by old italic-conversion bug)
+ * - Strips any remaining HTML tags
+ */
+function cleanPath(s) {
+  if (!s) return '';
+  var r = String(s);
+  // Restore _ from italic tags: my<em>shared</em> → my_shared_
+  // Pattern: <em>content</em> → _content_
+  r = r.replace(/<em>(.*?)<\/em>/g, '_$1_');
+  // Strip any remaining HTML tags
+  r = r.replace(/<[^>]*>/g, '');
+  return r;
+}
 
 var TEXT_EXTS = {'md':1,'txt':1,'html':1,'htm':1,'css':1,'js':1,'mjs':1,'cjs':1,
   'ts':1,'tsx':1,'jsx':1,'json':1,'xml':1,'yaml':1,'yml':1,'csv':1,'log':1,
@@ -141,8 +156,8 @@ function bootApp() {
   applyFeatureFlags(); // apply defaults immediately; will re-apply when api.info resolves
 
   var params   = new URLSearchParams(location.search);
-  var urlRoot  = params.get('root');
-  var urlFile  = params.get('file');
+  var urlRoot  = cleanPath(params.get('root') || '');
+  var urlFile  = cleanPath(params.get('file') || '');
 
   if (urlRoot) {
     openRoot(urlRoot).then(function() {
@@ -228,7 +243,11 @@ function showLogin() {
 
 /* ── Storage ─────────────────────────────────────────────────── */
 function loadStorage() {
-  try { S.recentFolders = JSON.parse(localStorage.getItem(LS_RECENT) || '[]'); } catch(e) { S.recentFolders = []; }
+  try {
+    var _rf = JSON.parse(localStorage.getItem(LS_RECENT) || '[]');
+    // Sanitize: strip any HTML tags that may have been stored by older buggy versions
+    S.recentFolders = _rf.map(function(p) { return cleanPath(p); }).filter(Boolean);
+  } catch(e) { S.recentFolders = []; }
   try { S.fileCache     = JSON.parse(localStorage.getItem(LS_FILES)  || '{}'); } catch(e) { S.fileCache = {}; }
 }
 function saveRecent() { localStorage.setItem(LS_RECENT, JSON.stringify(S.recentFolders)); }
@@ -263,7 +282,7 @@ function syncURLFile(filePath, fileName) {
   } else {
     u.searchParams.delete('file');
     // Restore folder name in title
-    var root = u.searchParams.get('root');
+    var root = cleanPath(u.searchParams.get('root') || '');
     if (root) {
       var folderName = root.split('/').pop() || root.split('\\').pop() || root;
       document.title = folderName + ' - Mini Local File Manager';
@@ -278,7 +297,7 @@ function syncURLFile(filePath, fileName) {
    OPEN ROOT
 ═══════════════════════════════════════════════════════════════ */
 function openRoot(rootPath) {
-  rootPath = (rootPath || '').trim();
+  rootPath = cleanPath((rootPath || '').trim()); // strip any accidental HTML tags
   if (!rootPath) return;
   closeModal('modal-open');
   statusMsg(t('msgLoading'));

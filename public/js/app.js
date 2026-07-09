@@ -736,36 +736,44 @@ function inlineMD(text, baseDir) {
     codes.push(esc(c));
     return '\x00C' + (codes.length - 1) + '\x00';
   });
-  // ── Protect bare URLs from italic/bold conversion ────────────────────
-  // URLs containing underscores (e.g. query params like _ControlID=...)
-  // would be mangled by the _text_ italic rule. Stash them as placeholders.
-  var urlPlaceholders = [];
-  s = s.replace(/https?:\/\/[^\s<>\"'\)\]]+/g, function(url) {
-    urlPlaceholders.push(url);
-    return '\x00U' + (urlPlaceholders.length - 1) + '\x00';
+  // ── Protect images, links, and URLs BEFORE bold/italic conversion ───
+  // All three may contain underscores that would be wrongly converted to
+  // <em> tags by the _text_ rule. Stash them as placeholder tokens first.
+  var _spans = [];
+
+  // 1. Images: ![alt](src)  — process before links to avoid mis-matching
+  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(_, alt, imgSrc) {
+    var html = '<img src="' + esc(resolveImg(imgSrc, baseDir)) + '" alt="' + esc(alt) + '" class="md-img">';
+    _spans.push(html);
+    return '\x00S' + (_spans.length - 1) + '\x00';
   });
+
+  // 2. Inline links: [label](href)
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function(_, label, href) {
+    var safeHref = href.replace(/[<>"]/g, '');
+    var html = '<a href="' + safeHref + '" target="_blank" rel="noopener">' + esc(label) + '</a>';
+    _spans.push(html);
+    return '\x00S' + (_spans.length - 1) + '\x00';
+  });
+
+  // 3. Bare https?:// URLs (not already inside an attribute)
+  s = s.replace(/(^|[^"'=])(https?:\/\/[^\s<>"']+)/g, function(_, pre, url) {
+    var safeUrl = url.replace(/[<>"]/g, '');
+    var html = '<a href="' + safeUrl + '" target="_blank" rel="noopener">' + esc(url) + '</a>';
+    _spans.push(html);
+    return pre + '\x00S' + (_spans.length - 1) + '\x00';
+  });
+
+  // ── Now safe to apply bold / italic (no _ or * left in links/images) ─
   s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');
   s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
   s = s.replace(/_(.+?)_/g, '<em>$1</em>');
   s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
-  // Restore URL placeholders before link processing
-  s = s.replace(/\x00U(\d+)\x00/g, function(_, i) { return urlPlaceholders[+i]; });
-  // Images before links
-  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(_, alt, src) {
-    return '<img src="' + esc(resolveImg(src, baseDir)) + '" alt="' + esc(alt) + '" class="md-img">';
-  });
-  // Links — href kept as-is (only strip < > " for injection prevention)
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function(_, label, href) {
-    var safeHref = href.replace(/[<>"]/g, '');
-    return '<a href="' + safeHref + '" target="_blank" rel="noopener">' + esc(label) + '</a>';
-  });
-  // Auto-links: bare http/https URLs → clickable links
-  s = s.replace(/(^|[^"'=])(https?:\/\/[^\s<>"']+)/g, function(_, pre, url) {
-    var safeUrl = url.replace(/[<>"]/g, '');
-    return pre + '<a href="' + safeUrl + '" target="_blank" rel="noopener">' + esc(url) + '</a>';
-  });
+
+  // ── Restore all protected spans ──────────────────────────────────────
+  s = s.replace(/\x00S(\d+)\x00/g, function(_, i) { return _spans[+i]; });
   s = s.replace(/\[ \] /g, '<input type="checkbox" disabled> ');
   s = s.replace(/\[x\] /gi, '<input type="checkbox" checked disabled> ');
   // Restore code

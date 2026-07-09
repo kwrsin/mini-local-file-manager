@@ -755,10 +755,27 @@ function inlineMD(text, baseDir) {
     codes.push(esc(c));
     return '\x00C' + (codes.length - 1) + '\x00';
   });
-  // ── Protect images, links, and URLs BEFORE bold/italic conversion ───
-  // All three may contain underscores that would be wrongly converted to
-  // <em> tags by the _text_ rule. Stash them as placeholder tokens first.
+  // ── Protect raw HTML tags, images, links, and URLs BEFORE bold/italic ─
+  // Raw HTML tags (e.g. <a href="...">), Markdown images/links, and bare
+  // URLs may all contain underscores or asterisks that must not be treated
+  // as italic/bold markers. Stash everything as placeholders first.
   var _spans = [];
+
+  // 0. Raw HTML elements — protect complete <tag ...>content</tag> blocks,
+  //    then protect remaining self-closing/void tags.
+  //    This prevents _underscores_ inside href attrs OR tag content from
+  //    being converted to <em> by the italic rule.
+  //
+  //    Strategy A: paired tags with content, e.g. <a href="x">my_text</a>
+  s = s.replace(/<([a-zA-Z][a-zA-Z0-9]*)([^>]*)>([\s\S]*?)<\/\1>/g, function(m) {
+    _spans.push(m);
+    return '\x00S' + (_spans.length - 1) + '\x00';
+  });
+  //    Strategy B: remaining unpaired/void tags, e.g. <img src="x_y.png">
+  s = s.replace(/<[a-zA-Z\/][^>]*>/g, function(tag) {
+    _spans.push(tag);
+    return '\x00S' + (_spans.length - 1) + '\x00';
+  });
 
   // 1. Images: ![alt](src)  — process before links to avoid mis-matching
   s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, function(_, alt, imgSrc) {
@@ -783,7 +800,7 @@ function inlineMD(text, baseDir) {
     return pre + '\x00S' + (_spans.length - 1) + '\x00';
   });
 
-  // ── Now safe to apply bold / italic (no _ or * left in links/images) ─
+  // ── Now safe to apply bold / italic (no _ or * inside HTML tags/links) ─
   s = s.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');

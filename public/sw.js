@@ -2,19 +2,17 @@
  * sw.js – Service Worker for Mini Local File Manager PWA
  *
  * Strategy:
- *  - App shell (HTML, CSS, JS, fonts) → Cache-first, update in background
+ *  - App shell (HTML, CSS, JS) → Network-first with cache fallback
+ *    (ensures updates are picked up immediately on next load)
  *  - API calls (/api/*) → Network-only (always fresh from server)
- *  - Images / raw files (/api/raw) → Network-only (local FS content)
+ *  - External resources (fonts etc.) → Cache-first
  *
- * The app is a localhost tool so offline mode caches only the UI shell.
- * Actual file operations always require the Node.js server to be running.
+ * Cache is versioned by build timestamp so old entries are evicted on update.
  */
 
 'use strict';
 
-var CACHE_NAME    = 'mlfm-shell-v2';
-var CACHE_TIMEOUT = 5000; // ms before falling back to cache
-
+var CACHE_VERSION = 'mlfm-shell-v3';
 var SHELL_URLS = [
   '/',
   '/index.html',
@@ -28,11 +26,10 @@ var SHELL_URLS = [
   '/manifest.json'
 ];
 
-/* ── Install: pre-cache the app shell ───────────────────────── */
+/* ── Install: pre-cache app shell, activate immediately ─────── */
 self.addEventListener('install', function(event) {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(function(cache) {
-      // Use individual adds so one failure doesn't block others
+    caches.open(CACHE_VERSION).then(function(cache) {
       var promises = SHELL_URLS.map(function(url) {
         return cache.add(url).catch(function(err) {
           console.warn('[SW] Failed to cache:', url, err);
@@ -40,20 +37,25 @@ self.addEventListener('install', function(event) {
       });
       return Promise.all(promises);
     }).then(function() {
+      // Activate immediately — don't wait for old SW to finish
       return self.skipWaiting();
     })
   );
 });
 
-/* ── Activate: clean up old caches ──────────────────────────── */
+/* ── Activate: delete old caches, claim all clients ─────────── */
 self.addEventListener('activate', function(event) {
   event.waitUntil(
     caches.keys().then(function(keys) {
       return Promise.all(
-        keys.filter(function(key) { return key !== CACHE_NAME; })
-            .map(function(key) { return caches.delete(key); })
+        keys.filter(function(key) { return key !== CACHE_VERSION; })
+            .map(function(key) {
+              console.log('[SW] Deleting old cache:', key);
+              return caches.delete(key);
+            })
       );
     }).then(function() {
+      // Take control of all open tabs immediately
       return self.clients.claim();
     })
   );
@@ -64,7 +66,7 @@ self.addEventListener('fetch', function(event) {
   var url = event.request.url;
   var req = event.request;
 
-  // Always go to network for API calls (file operations, auth, etc.)
+  // ── API calls: always network, never cache ────────────────────
   if (url.indexOf('/api/') !== -1) {
     event.respondWith(
       fetch(req).catch(function() {
@@ -77,51 +79,47 @@ self.addEventListener('fetch', function(event) {
     return;
   }
 
-  // WebSocket — let pass through (SW doesn't intercept WS)
-  if (url.indexOf('ws://') === 0 || url.indexOf('wss://') === 0) return;
-
-  // External resources (Google Fonts etc.) — network with cache fallback
+  // ── External resources (Google Fonts etc.): cache-first ───────
   if (url.indexOf(self.location.origin) !== 0) {
     event.respondWith(
       caches.match(req).then(function(cached) {
-        var networkFetch = fetch(req).then(function(response) {
+        if (cached) return cached;
+        return fetch(req).then(function(response) {
           if (response.ok) {
             var clone = response.clone();
-            caches.open(CACHE_NAME).then(function(cache) { cache.put(req, clone); });
+            caches.open(CACHE_VERSION).then(function(cache) { cache.put(req, clone); });
           }
           return response;
         });
-        return cached || networkFetch;
       })
     );
     return;
   }
 
-  // App shell: stale-while-revalidate
+  // ── App shell: NETWORK-FIRST with cache fallback ──────────────
+  // Always try the network first so updates are reflected immediately.
+  // Only fall back to cache when the server is unreachable.
   event.respondWith(
-    caches.open(CACHE_NAME).then(function(cache) {
-      return cache.match(req).then(function(cached) {
-        var networkFetch = fetch(req).then(function(response) {
-          if (response && response.ok) {
-            cache.put(req, response.clone());
-          }
-          return response;
-        }).catch(function() {
-          // Network failed — return offline page for navigation requests
-          if (req.mode === 'navigate') {
-            return cache.match('/index.html');
-          }
-          return null;
-        });
-
-        // Return cached immediately; update in background
-        return cached || networkFetch;
+    fetch(req).then(function(response) {
+      // Update the cache with the fresh response
+      if (response && response.ok) {
+        var clone = response.clone();
+        caches.open(CACHE_VERSION).then(function(cache) { cache.put(req, clone); });
+      }
+      return response;
+    }).catch(function() {
+      // Network failed — serve from cache
+      return caches.match(req).then(function(cached) {
+        if (cached) return cached;
+        // Fallback for navigation requests
+        if (req.mode === 'navigate') return caches.match('/index.html');
+        return new Response('', { status: 503 });
       });
     })
   );
 });
 
-/* ── Message: force update ───────────────────────────────────── */
+/* ── Message: force update from app ─────────────────────────── */
 self.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();

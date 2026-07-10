@@ -725,22 +725,69 @@ function parseMarkdown(raw, baseDir) {
     if (/^[-*_]{3,}\s*$/.test(line)) { out.push('<hr>'); continue; }
     if (/^> /.test(line)) { out.push('<blockquote>' + inlineMD(line.slice(2), baseDir) + '</blockquote>'); continue; }
     if (/^[*-] /.test(line)) { out.push('<li class="ul-item">' + inlineMD(line.slice(2), baseDir) + '</li>'); continue; }
-    if (/^\d+\. /.test(line)) { out.push('<li class="ol-item">' + inlineMD(line.replace(/^\d+\. /, ''), baseDir) + '</li>'); continue; }
+    var olMatch = line.match(/^(\d+)\. (.*)$/);
+    if (olMatch) { out.push('<li class="ol-item" data-n="' + olMatch[1] + '">' + inlineMD(olMatch[2], baseDir) + '</li>'); continue; }
     if (line.trim() === '') { out.push(''); continue; }
     out.push('<p>' + inlineMD(line, baseDir) + '</p>');
   }
   if (inCode) out.push('<pre><code>' + esc(codeLines.join('\n')) + '</code></pre>');
   if (tableLines.length) flushTable();
 
-  var html = out.join('\n');
-  // Wrap consecutive li items
-  html = html.replace(/(<li class="ul-item">[\s\S]*?<\/li>\n?)+/g, function(m) {
-    return '<ul>' + m.replace(/ class="ul-item"/g, '') + '</ul>';
-  });
-  html = html.replace(/(<li class="ol-item">[\s\S]*?<\/li>\n?)+/g, function(m) {
-    return '<ol>' + m.replace(/ class="ol-item"/g, '') + '</ol>';
-  });
-  return html;
+  // ── Wrap list items, preserving original numbers from Markdown ──────
+  // Walk through the output lines and group consecutive li items into
+  // <ul>/<ol> blocks. When the list type changes, close the current list
+  // and open a new one. This correctly handles mixed ol/ul sequences
+  // and preserves the original Markdown numbering via <ol start="N">.
+  var result = [];
+  var listType = null; // null | 'ul' | 'ol'
+  var olStart  = 1;    // running counter for <ol start="">
+
+  for (var ri = 0; ri < out.length; ri++) {
+    var item = out[ri];
+    var isUL = item.indexOf('<li class="ul-item">') === 0;
+    var isOL = item.indexOf('<li class="ol-item"') === 0;
+
+    if (!isUL && !isOL) {
+      // Not a list item: close open list if any
+      if (listType) { result.push(listType === 'ul' ? '</ul>' : '</ol>'); listType = null; }
+      result.push(item);
+      continue;
+    }
+
+    // Determine the ol number from the original line (stored as data attr below)
+    var olNum = 1;
+    if (isOL) {
+      var nm = item.match(/data-n="(\d+)"/);
+      olNum = nm ? parseInt(nm[1], 10) : (olStart);
+    }
+
+    // Opening a new list or switching type
+    if (!listType) {
+      listType = isUL ? 'ul' : 'ol';
+      olStart  = isOL ? olNum : 1;
+      result.push(isUL ? '<ul>' : '<ol start="' + olStart + '">');
+    } else if (isUL && listType === 'ol') {
+      result.push('</ol><ul>');
+      listType = 'ul';
+    } else if (isOL && listType === 'ul') {
+      olStart = olNum;
+      result.push('</ul><ol start="' + olStart + '">');
+      listType = 'ol';
+    } else if (isOL && listType === 'ol') {
+      // Check if numbering jumps (new separate list) — gap > 1 means new list
+      if (olNum !== olStart + 1 && olNum !== olStart) {
+        // Actually just continue: allow any numbering, browser renders start=
+        // Do nothing special
+      }
+      olStart = olNum;
+    }
+
+    // Strip the class attribute and data-n before pushing
+    result.push(item.replace(/ class="[ou]l-item"/, '').replace(/ data-n="\d+"/, ''));
+  }
+  if (listType) { result.push(listType === 'ul' ? '</ul>' : '</ol>'); }
+
+  return result.join('\n');
 }
 
 function splitRow(line) {

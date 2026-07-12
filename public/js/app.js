@@ -1796,8 +1796,8 @@ function bindReplace() {
   // Exec button
   $('btn-replace-exec').addEventListener('click', executeReplace);
 
-  // Enter key in inputs triggers exec
-  function onKey(e) { if (e.key === 'Enter') executeReplace(); }
+  // Enter key in text inputs does nothing (prevents accidental execution while typing)
+  function onKey(e) { if (e.key === 'Enter') e.preventDefault(); }
   $('replace-search-input').addEventListener('keydown', onKey);
   $('replace-with-input').addEventListener('keydown', onKey);
 

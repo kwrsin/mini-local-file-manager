@@ -105,11 +105,15 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17,21 17,13 7,13 7,21"/><polyline points="7,3 7,8 15,8"/></svg>
       <span data-i18n="save">保存</span>
     </button>
+    <button class="btn-tool" id="btn-replace" title="F4" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 14l4-4-4-4"/><path d="M21 10H9"/><path d="M3 20h18"/></svg>
+      <span data-i18n="replace">置換</span>
+    </button>
     <button class="btn-tool" id="btn-back-folder" title="F9">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15,18 9,12 15,6"/></svg>
       <span data-i18n="backToFolder">フォルダへ戻る</span>
     </button>
-    <button class="btn-tool" id="btn-reload-file" title="Reload">
+    <button class="btn-tool" id="btn-reload-file" title="Ctrl+R">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>
       <span data-i18n="reload">再読み込み</span>
     </button>
@@ -353,5 +357,46 @@ function triggerPWAInstall() {
   _deferredInstall.userChoice.then(function() { _deferredInstall = null; });
 }
 </script>
+
+  <!-- Replace Modal -->
+  <div class="modal" id="modal-replace" style="display:none">
+    <div class="modal-bg" data-close="modal-replace"></div>
+    <div class="modal-box modal-replace-box">
+      <div class="modal-header">
+        <span data-i18n="replaceTitle">置換</span>
+        <button class="modal-x" data-close="modal-replace">✕</button>
+      </div>
+      <div class="modal-section">
+        <label class="modal-label" data-i18n="replaceSearch">検索</label>
+        <div class="replace-input-row">
+          <input id="replace-search-input" class="modal-input" type="text" autocomplete="off" spellcheck="false">
+          <button class="replace-hist-btn" id="replace-search-hist-btn" title="履歴">▾</button>
+        </div>
+        <div class="replace-hist-list" id="replace-search-hist" style="display:none"></div>
+      </div>
+      <div class="modal-section">
+        <label class="modal-label" data-i18n="replaceWith">置換文字</label>
+        <div class="replace-input-row">
+          <input id="replace-with-input" class="modal-input" type="text" autocomplete="off" spellcheck="false">
+          <button class="replace-hist-btn" id="replace-with-hist-btn" title="履歴">▾</button>
+        </div>
+        <div class="replace-hist-list" id="replace-with-hist" style="display:none"></div>
+      </div>
+      <div class="modal-section replace-options">
+        <label class="replace-chk-label">
+          <input type="checkbox" id="replace-regex-chk">
+          <span data-i18n="replaceRegex">正規表現</span>
+        </label>
+        <label class="replace-chk-label">
+          <input type="checkbox" id="replace-case-chk">
+          <span data-i18n="replaceCaseSensitive">大文字小文字を区別</span>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-primary" id="btn-replace-exec" data-i18n="replaceExec">置換実行</button>
+        <button class="btn-tool" id="btn-replace-cancel" data-close="modal-replace" data-i18n="cancel">キャンセル</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

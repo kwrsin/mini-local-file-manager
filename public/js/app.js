@@ -60,6 +60,8 @@ Object.assign(MEDIA_EXTS, AUDIO_EXTS, VIDEO_EXTS);
 Object.assign(VIEW_EXTS, MEDIA_EXTS);
 
 var LS_RECENT  = 'fm_recent';
+var LS_REPLACE_SEARCH = 'fm_replace_search';
+var LS_REPLACE_WITH   = 'fm_replace_with';
 var LS_FILES   = 'fm_files';
 var MAX_RECENT = 5;
 
@@ -151,6 +153,7 @@ function bootApp() {
   bindSearch();
   bindUpload();
   bindLongPress();
+  bindReplace();
   bindTreeDragMove();
   applyI18n();
   applyFeatureFlags(); // apply defaults immediately; will re-apply when api.info resolves
@@ -591,6 +594,7 @@ function bindEditor() {
     }
   });
   $('btn-reload-file').addEventListener('click', reloadFile);
+  $('btn-replace').addEventListener('click', openReplace);
 }
 
 /**
@@ -1476,6 +1480,7 @@ function bindShortcuts() {
     if (ctrl && e.key === 's') { e.preventDefault(); saveFile(); return; }
     if (ctrl && e.key === 'u') { e.preventDefault(); openUpload(); return; }
     if (ctrl && e.key === 'd' && S.enabledDownload) { e.preventDefault(); doDownload(); return; }
+    if (e.key === 'F4' && S.tab === 'editor' && S.isEditing) { e.preventDefault(); openReplace(); return; }
     if (!inInput) {
       if (ctrl && e.key === 'c') { e.preventDefault(); doCopy(); return; }
       if (ctrl && e.key === 'x') { e.preventDefault(); doCut(); return; }
@@ -1484,6 +1489,7 @@ function bindShortcuts() {
     }
     if (e.key === 'F2') { e.preventDefault(); startRename(); return; }
     if (e.key === 'F3') { e.preventDefault(); openSearch(); return; }
+    if (ctrl && e.key === 'r' && S.tab === 'editor') { e.preventDefault(); reloadFile(); return; }
     if (e.key === 'F9') {
       e.preventDefault();
       if (S.tab === 'editor') {
@@ -1711,6 +1717,187 @@ function doDownload() {
     document.body.removeChild(a);
     if (node.kind !== 'directory') statusMsg(t('msgDownloading') || 'Downloading…');
   }, 100);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   REPLACE (Find & Replace in markdown editor)
+═══════════════════════════════════════════════════════════════ */
+var MAX_HIST = 10;
+
+function loadReplaceHist(lsKey) {
+  try { return JSON.parse(localStorage.getItem(lsKey) || '[]'); } catch(e) { return []; }
+}
+function saveReplaceHist(lsKey, hist) {
+  localStorage.setItem(lsKey, JSON.stringify(hist.slice(0, MAX_HIST)));
+}
+function pushReplaceHist(lsKey, value) {
+  if (!value) return;
+  var hist = loadReplaceHist(lsKey).filter(function(v) { return v !== value; });
+  hist.unshift(value);
+  saveReplaceHist(lsKey, hist);
+}
+
+function renderHistList(histId, inputId, lsKey) {
+  var list  = $(histId);
+  var input = $(inputId);
+  var hist  = loadReplaceHist(lsKey);
+  list.innerHTML = '';
+  if (!hist.length) { list.style.display = 'none'; return; }
+  hist.forEach(function(val, idx) {
+    var row = document.createElement('div');
+    row.className = 'replace-hist-item';
+    var span = document.createElement('span');
+    span.textContent = val;
+    span.title = val;
+    span.addEventListener('click', function() {
+      input.value = val;
+      list.style.display = 'none';
+      input.focus();
+    });
+    var del = document.createElement('button');
+    del.className = 'replace-hist-del';
+    del.textContent = '✕';
+    del.title = t('delete') || 'Delete';
+    del.addEventListener('click', function(e) {
+      e.stopPropagation();
+      var h = loadReplaceHist(lsKey).filter(function(_, i) { return i !== idx; });
+      saveReplaceHist(lsKey, h);
+      renderHistList(histId, inputId, lsKey);
+    });
+    row.appendChild(span);
+    row.appendChild(del);
+    list.appendChild(row);
+  });
+  list.style.display = 'block';
+}
+
+function bindReplace() {
+  function toggleHist(histId, inputId, lsKey) {
+    var list = $(histId);
+    if (list.style.display === 'block') { list.style.display = 'none'; return; }
+    renderHistList(histId, inputId, lsKey);
+  }
+
+  $('replace-search-hist-btn').addEventListener('click', function(e) {
+    e.stopPropagation();
+    toggleHist('replace-search-hist', 'replace-search-input', LS_REPLACE_SEARCH);
+  });
+  $('replace-with-hist-btn').addEventListener('click', function(e) {
+    e.stopPropagation();
+    toggleHist('replace-with-hist', 'replace-with-input', LS_REPLACE_WITH);
+  });
+
+  // Close history dropdowns on outside click
+  document.addEventListener('click', function() {
+    $('replace-search-hist').style.display = 'none';
+    $('replace-with-hist').style.display   = 'none';
+  });
+
+  // Exec button
+  $('btn-replace-exec').addEventListener('click', executeReplace);
+
+  // Enter key in inputs triggers exec
+  function onKey(e) { if (e.key === 'Enter') executeReplace(); }
+  $('replace-search-input').addEventListener('keydown', onKey);
+  $('replace-with-input').addEventListener('keydown', onKey);
+
+  // Cancel button already handled by modal-x via data-close
+  $('btn-replace-cancel').addEventListener('click', function() { closeModal('modal-replace'); });
+}
+
+function openReplace() {
+  if (!S.activeFile || !S.isEditing) return;
+  // Pre-fill search with selected text if any
+  var ta = $('editor-textarea');
+  var sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+  if (sel && sel.length < 200) $('replace-search-input').value = sel;
+  $('replace-search-hist').style.display = 'none';
+  $('replace-with-hist').style.display   = 'none';
+  openModal('modal-replace');
+  setTimeout(function() { $('replace-search-input').focus(); $('replace-search-input').select(); }, 50);
+}
+
+function executeReplace() {
+  var searchVal = $('replace-search-input').value;
+  var withVal   = $('replace-with-input').value;
+  var useRegex  = $('replace-regex-chk').checked;
+  var caseSens  = $('replace-case-chk').checked;
+
+  if (!searchVal) return;
+
+  var ta = $('editor-textarea');
+  var full = ta.value;
+
+  // Determine scope: selected range or full text
+  var start = ta.selectionStart;
+  var end   = ta.selectionEnd;
+  var hasSelection = start < end;
+  var scope     = hasSelection ? full.substring(start, end) : full;
+  var beforeScope = hasSelection ? full.substring(0, start) : '';
+  var afterScope  = hasSelection ? full.substring(end)       : '';
+
+  // Build regex
+  var pattern;
+  try {
+    if (useRegex) {
+      pattern = new RegExp(searchVal, 'g' + (caseSens ? '' : 'i'));
+    } else {
+      // Escape special regex chars for literal search
+      var escaped = searchVal.replace(/[.*+?^${}()|\[\]\\]/g, '\\$&');
+      pattern = new RegExp(escaped, 'g' + (caseSens ? '' : 'i'));
+    }
+  } catch(e) {
+    statusMsg(t('msgReplaceErr') + ' ' + e.message);
+    return;
+  }
+
+  // Count and replace
+  // Use String.replace with a function to handle both literal and regex modes.
+  // For regex with backreferences ($1, $2...), we rebuild the replacement manually
+  // so it works correctly regardless of JS engine quirks with the replacement string.
+  var count = 0;
+  var replaced;
+  if (useRegex && /\$\d/.test(withVal)) {
+    // Regex mode WITH backreferences: expand $1, $2... manually
+    replaced = scope.replace(pattern, function() {
+      count++;
+      var args = Array.prototype.slice.call(arguments, 0, -2); // [match, g1, g2, ...]
+      return withVal.replace(/\$([0-9]+)/g, function(_, n) {
+        var idx = parseInt(n, 10);
+        return idx < args.length ? (args[idx] || '') : '';
+      });
+    });
+  } else {
+    // Literal mode OR regex without backreferences
+    replaced = scope.replace(pattern, function() {
+      count++;
+      return withVal;
+    });
+  }
+
+  if (count === 0) {
+    statusMsg(t('msgReplaceNone'));
+    return;
+  }
+
+  // Apply back
+  var newFull = beforeScope + replaced + afterScope;
+  ta.value = newFull;
+  // Update textarea selection to replaced scope range
+  if (hasSelection) {
+    ta.selectionStart = start;
+    ta.selectionEnd   = start + replaced.length;
+  }
+
+  // Sync activeFile content
+  S.activeFile.content = newFull;
+
+  // Save to history
+  pushReplaceHist(LS_REPLACE_SEARCH, searchVal);
+  pushReplaceHist(LS_REPLACE_WITH,   withVal);
+
+  closeModal('modal-replace');
+  statusMsg(count + t('msgReplaced'));
 }
 
 /* ═══════════════════════════════════════════════════════════════

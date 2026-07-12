@@ -226,6 +226,7 @@ The URL is updated automatically when you open a folder or file (bookmarkable li
 |---|---|
 | `Ctrl+O` | Open folder |
 | `Ctrl+S` | Save file |
+| `Ctrl+R` | Reload file |
 | `Ctrl+U` | Upload files (context menu) |
 | `Ctrl+D` | Download selected file/folder |
 | `Ctrl+C` | Copy selected |
@@ -234,6 +235,7 @@ The URL is updated automatically when you open a folder or file (bookmarkable li
 | `Ctrl+Delete` | Delete selected |
 | `F2` | Rename |
 | `F3` | Search |
+| `F4` | Text Replacement in Markdown editor|
 | `F9` | Back to folder tree (auto-saves if editing) |
 | `F10` | Toggle Edit / Preview mode |
 | `Shift+Enter` | Open selected file in viewer/editor |
@@ -444,6 +446,7 @@ node mini-local-file-manager/server.js -ip_addr=0.0.0.0
 |---|---|
 | `Ctrl+O` | フォルダを開く |
 | `Ctrl+S` | 保存 |
+| `Ctrl+R` | 再読込 |
 | `Ctrl+U` | アップロード（コンテキストメニュー） |
 | `Ctrl+D` | ダウンロード |
 | `Ctrl+C` | コピー |
@@ -452,6 +455,7 @@ node mini-local-file-manager/server.js -ip_addr=0.0.0.0
 | `Ctrl+Delete` | 削除 |
 | `F2` | 名前変更 |
 | `F3` | ファイル検索 |
+| `F4` | マークダウン エディタ内の文字列置換 |
 | `F9` | フォルダ階層へ戻る（編集中は保存） |
 | `F10` | 編集／プレビュー切替 |
 | `Shift+Enter` | 選択ファイルを開く |

@@ -129,20 +129,28 @@ document.addEventListener('DOMContentLoaded', function() {
   }).catch(function() { bootApp(); });
 });
 
+/* Show/hide the full-screen loading overlay */
+function showLoading(msg) {
+  var overlay = $('loading-overlay');
+  var txt     = $('loading-text');
+  if (!overlay) return;
+  if (txt) txt.textContent = msg || 'Loading…';
+  overlay.classList.remove('fade-out');
+  overlay.style.display = 'flex';
+}
+function hideLoading() {
+  var overlay = $('loading-overlay');
+  if (!overlay || overlay.style.display === 'none') return;
+  overlay.classList.add('fade-out');
+  setTimeout(function() {
+    overlay.style.display = 'none';
+    overlay.classList.remove('fade-out');
+  }, 280);
+}
+
 function bootApp() {
   $('login-screen').style.display = 'none';
   $('app').style.display = 'flex';
-  api.info().then(function(info) {
-    S.platform        = info.platform;
-    S.sep             = info.sep;
-    S.enabledDownload = info.enabledDownload !== false; // default true when no conf
-    S.enabledUnzip    = info.enabledUnzip    !== false;
-    S.maxUploadMB     = (typeof info.maxUploadMB === 'number' && info.maxUploadMB > 0)
-                        ? info.maxUploadMB : 20;
-    $('server-info').textContent = info.hostname + ' · ' + location.host;
-    applyFeatureFlags();
-  }).catch(function() {});
-
   bindTabs();
   bindToolbar();
   bindEditor();
@@ -156,29 +164,63 @@ function bootApp() {
   bindReplace();
   bindTreeDragMove();
   applyI18n();
-  applyFeatureFlags(); // apply defaults immediately; will re-apply when api.info resolves
+  applyFeatureFlags(); // apply defaults; re-applied after api.info resolves
 
   var params   = new URLSearchParams(location.search);
   var urlRoot  = cleanPath(params.get('root') || '');
   var urlFile  = cleanPath(params.get('file') || '');
 
-  if (urlRoot) {
-    openRoot(urlRoot).then(function() {
-      if (urlFile) openFileFromURL(urlFile);
-    });
-  } else if (urlFile) {
-    // No root given, but a file path was provided — derive root from
-    // the file's parent directory and then open the file.
-    var sepGuess = urlFile.indexOf('\\') >= 0 ? '\\' : '/';
-    var parts = urlFile.split(sepGuess);
-    parts.pop();
-    var derivedRoot = parts.join(sepGuess);
-    if (derivedRoot) {
-      openRoot(derivedRoot).then(function() { openFileFromURL(urlFile); });
+  // Single api.info() call: sets flags then starts navigation
+  api.info().then(function(info) {
+    S.platform        = info.platform;
+    S.sep             = info.sep;
+    S.enabledDownload = info.enabledDownload !== false;
+    S.enabledUnzip    = info.enabledUnzip    !== false;
+    S.maxUploadMB     = (typeof info.maxUploadMB === 'number' && info.maxUploadMB > 0)
+                        ? info.maxUploadMB : 20;
+    $('server-info').textContent = info.hostname + ' · ' + location.host;
+    applyFeatureFlags();
+    startNavigation();
+  }).catch(function() {
+    // Server unreachable — try with defaults
+    startNavigation();
+  });
+
+  function startNavigation() {
+    if (urlRoot || urlFile || S.recentFolders.length) {
+      // 2nd+ launch: hide empty state immediately so it doesn't flash
+      // before the loading overlay appears and the folder loads.
+      var treeEmpty = $('tree-empty');
+      if (treeEmpty) treeEmpty.style.visibility = 'hidden';
     }
-  } else if (S.recentFolders.length) {
-    // Try recent folders sequentially until a valid one is found
-    tryRecentFolders(0);
+    if (urlRoot) {
+      showLoading();
+      openRoot(urlRoot).then(function() {
+        if (urlFile) openFileFromURL(urlFile);
+      }).catch(function(e) {
+        var treeEmpty = $('tree-empty');
+        if (treeEmpty) treeEmpty.style.visibility = '';
+        statusMsg((e && e.message) ? e.message : t('msgConnErr'));
+      });
+    } else if (urlFile) {
+      var sepGuess = urlFile.indexOf('\\') >= 0 ? '\\' : '/';
+      var parts = urlFile.split(sepGuess);
+      parts.pop();
+      var derivedRoot = parts.join(sepGuess);
+      if (derivedRoot) {
+        showLoading();
+        openRoot(derivedRoot).then(function() {
+          openFileFromURL(urlFile);
+        }).catch(function(e) {
+          var treeEmpty = $('tree-empty');
+          if (treeEmpty) treeEmpty.style.visibility = '';
+          statusMsg((e && e.message) ? e.message : t('msgConnErr'));
+        });
+      }
+    } else if (S.recentFolders.length) {
+      showLoading();
+      tryRecentFolders(0);
+    }
   }
 }
 
@@ -306,10 +348,22 @@ function openRoot(rootPath) {
   statusMsg(t('msgLoading'));
 
   return api.validate(rootPath).then(function(v) {
-    if (!v.valid) { showPathError(t('msgPathInvalid') + ': ' + (v.error || '')); return; }
-    if (!v.isDir) { showPathError(t('msgPathNotDir')); return; }
+    if (!v.valid) {
+      hideLoading(); // path invalid — dismiss overlay
+      showPathError(t('msgPathInvalid') + ': ' + (v.error || ''));
+      return Promise.reject(new Error('invalid path'));
+    }
+    if (!v.isDir) {
+      hideLoading();
+      showPathError(t('msgPathNotDir'));
+      return Promise.reject(new Error('not a directory'));
+    }
     return api.tree(rootPath).then(function(res) {
-      if (res.error) { statusMsg(t('msgError') + ': ' + res.error); return; }
+      if (res.error) {
+        hideLoading();
+        statusMsg(t('msgError') + ': ' + res.error);
+        return;
+      }
       S.root     = rootPath;
       S.selected = null;
       // Keep openDirs state; only add root itself if not set yet
@@ -324,8 +378,17 @@ function openRoot(rootPath) {
       renderTree(res.tree, $('file-tree'));
       updateStatus(rootPath);
       statusMsg(t('msgOpened'));
+      // Restore empty state visibility (it will be hidden by renderTree if folder has items)
+      var te = $('tree-empty');
+      if (te) te.style.visibility = '';
+      hideLoading(); // dismiss loading overlay if shown
     });
-  }).catch(function(e) { statusMsg(t('msgConnErr') + ': ' + e.message); });
+  }).catch(function(e) {
+    // Suppress 'invalid path' and 'not a directory' — already handled above
+    if (e && (e.message === 'invalid path' || e.message === 'not a directory')) return;
+    hideLoading();
+    statusMsg(t('msgConnErr') + ': ' + (e.message || e));
+  });
 }
 
 function showPathError(msg) {

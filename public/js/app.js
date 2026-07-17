@@ -163,6 +163,7 @@ function bootApp() {
   bindLongPress();
   bindReplace();
   bindTreeDragMove();
+  bindScrollHeader();
   applyI18n();
   applyFeatureFlags(); // apply defaults; re-applied after api.info resolves
 
@@ -1961,6 +1962,83 @@ function executeReplace() {
 
   closeModal('modal-replace');
   statusMsg(count + t('msgReplaced'));
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   AUTO-HIDE HEADER ON SCROLL
+   - Scroll down  → hide tab-bar + toolbar (slide up + fade)
+   - Scroll up    → show tab-bar + toolbar (slide down + fade in)
+═══════════════════════════════════════════════════════════════ */
+function bindScrollHeader() {
+  var tabBar  = $('tab-bar');
+
+  // Find the toolbar of the currently active pane
+  function activeToolbar() {
+    var pane = document.querySelector('.pane.active');
+    return pane ? pane.querySelector('.toolbar') : null;
+  }
+
+  var lastY       = 0;
+  var hidden      = false;
+  var ticking     = false;
+  var THRESHOLD   = 6;  // px — minimum scroll delta to trigger toggle
+
+  function activePaneEl() {
+    return document.querySelector('.pane.active');
+  }
+
+  function setHidden(hide) {
+    if (hide === hidden) return;
+    hidden = hide;
+    if (tabBar) tabBar.classList.toggle('header-hidden', hide);
+    var tb = activeToolbar();
+    if (tb) tb.classList.toggle('header-hidden', hide);
+    // Toggle padding on the active pane so content expands into freed space
+    var pane = activePaneEl();
+    if (pane) pane.classList.toggle('content-expanded', hide);
+  }
+
+  function onScroll(e) {
+    var el = e.currentTarget || e.target;
+    var y  = el.scrollTop;
+    var dy = y - lastY;
+
+    if (!ticking) {
+      ticking = true;
+      requestAnimationFrame(function() {
+        ticking = false;
+        if (Math.abs(dy) < THRESHOLD) { lastY = y; return; }
+        setHidden(dy > 0 && y > 10);
+        lastY = y;
+      });
+    }
+  }
+
+  // Always show header when scrolled to very top
+  function onScrollTop(e) {
+    var el = e.currentTarget || e.target;
+    if (el.scrollTop === 0) setHidden(false);
+    onScroll(e);
+  }
+
+  // Attach to all scrollable content areas
+  var scrollEls = [
+    $('file-tree'),
+    $('preview-wrap'),
+    $('editor-textarea'),
+  ];
+  scrollEls.forEach(function(el) {
+    if (el) el.addEventListener('scroll', onScrollTop, { passive: true });
+  });
+
+  // Reset header visibility when switching tabs
+  var origSwitchTab = switchTab;
+  switchTab = function(tab) {
+    origSwitchTab(tab);
+    // Show header on tab switch and reset scroll state
+    lastY = 0;
+    setHidden(false);
+  };
 }
 
 /* ═══════════════════════════════════════════════════════════════
